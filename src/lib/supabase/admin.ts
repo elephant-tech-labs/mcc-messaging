@@ -7,7 +7,7 @@ export function getSupabaseAdmin(): SupabaseClient {
   if (!client) {
     client = createClient(
       requiredEnv("SUPABASE_URL"),
-      requiredEnv("SUPABASE_SERVICE_ROLE_KEY"),
+      requiredEnv("SUPABASE_SECRET_KEY"),
       {
         auth: {
           persistSession: false,
