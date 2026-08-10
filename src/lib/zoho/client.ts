@@ -2,6 +2,18 @@ import { optionalEnv, requiredEnv } from "@/lib/env";
 
 let cachedToken: { accessToken: string; expiresAt: number; apiDomain: string } | null = null;
 
+export class ZohoApiError extends Error {
+  status: number;
+  payload: unknown;
+
+  constructor(status: number, payload: unknown) {
+    super(`Zoho API request failed (${status}): ${JSON.stringify(payload)}`);
+    this.name = "ZohoApiError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
 async function refreshAccessToken() {
   if (cachedToken && Date.now() < cachedToken.expiresAt - 60_000) {
     return cachedToken;
@@ -58,10 +70,19 @@ export async function zohoFetch<T>(path: string, init?: RequestInit): Promise<T>
     return {} as T;
   }
 
-  const payload = (await response.json()) as T;
-  if (!response.ok) {
-    throw new Error(`Zoho API request failed (${response.status}): ${JSON.stringify(payload)}`);
+  const text = await response.text();
+  let payload: unknown = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { message: text };
+    }
   }
 
-  return payload;
+  if (!response.ok) {
+    throw new ZohoApiError(response.status, payload);
+  }
+
+  return payload as T;
 }
