@@ -28,6 +28,10 @@ type ZohoUpsertResponse = {
   data?: ZohoUpsertItem[];
 };
 
+type ZohoUpdateResponse = {
+  data?: ZohoUpsertItem[];
+};
+
 export type AssignmentWorkerSummary = {
   workerId: string;
   claimed: number;
@@ -37,6 +41,7 @@ export type AssignmentWorkerSummary = {
 };
 
 const ASSIGNMENT_MODULE = "Volunteer_Shift_Assignmen";
+const SHIFT_MODULE = "Volunteer_Shifts";
 const LOOKUP_FIELDS = new Set([
   "Shifts",
   "Contact",
@@ -145,7 +150,9 @@ function classifyFailure(error: unknown): { code: string; retryable: boolean; me
     message.includes("Missing required assignment field") ||
     message.includes("Unexpected assignment module") ||
     message.includes("Assignment payload fields are missing") ||
-    message.includes("Invalid datetime assignment field");
+    message.includes("Invalid datetime assignment field") ||
+    message.includes("Assignment is missing its Supabase shift relationship") ||
+    message.includes("Volunteer shift is missing its Zoho shift id");
 
   return {
     code: isPayloadProblem ? "INVALID_OUTBOX_PAYLOAD" : "TRANSIENT_WORKER_ERROR",
@@ -169,6 +176,66 @@ async function markFailed(job: IntegrationJob, workerId: string, error: unknown)
   return data === "dead_letter" ? "dead_letter" : "failed";
 }
 
+async function syncShiftCapacityToZoho(assignmentId: string) {
+  const supabase = getSupabaseAdmin();
+
+  const { data: assignment, error: assignmentError } = await supabase
+    .from("volunteer_shift_assignments")
+    .select("shift_id")
+    .eq("id", assignmentId)
+    .single();
+  if (assignmentError) throw assignmentError;
+  if (!assignment?.shift_id) {
+    throw new Error("Assignment is missing its Supabase shift relationship");
+  }
+
+  const { data: shift, error: shiftError } = await supabase
+    .from("volunteer_shifts")
+    .select("id, zoho_shift_id, capacity")
+    .eq("id", assignment.shift_id)
+    .single();
+  if (shiftError) throw shiftError;
+  if (!shift?.zoho_shift_id) {
+    throw new Error("Volunteer shift is missing its Zoho shift id");
+  }
+
+  const { count: confirmedCount, error: confirmedError } = await supabase
+    .from("volunteer_shift_assignments")
+    .select("id", { count: "exact", head: true })
+    .eq("shift_id", assignment.shift_id)
+    .eq("status", "confirmed");
+  if (confirmedError) throw confirmedError;
+
+  const capacity = Number(shift.capacity ?? 0);
+  const confirmed = Number(confirmedCount ?? 0);
+  const openSpots = Math.max(0, capacity - confirmed);
+
+  const payload = await zohoFetch<ZohoUpdateResponse>(
+    `/crm/v8/${SHIFT_MODULE}/${encodeURIComponent(String(shift.zoho_shift_id))}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({
+        data: [
+          {
+            Confirmed_Volunteers_Count: confirmed,
+            Open_Spots: openSpots,
+            Sync_Status: "Synced",
+            Sync_Error: null,
+            Last_Supabase_Sync: toZohoDateTime(new Date(), "Last_Supabase_Sync"),
+          },
+        ],
+      }),
+    },
+  );
+
+  const item = payload.data?.[0];
+  if (!item || item.status === "error") {
+    throw new Error(
+      `Zoho shift capacity update did not succeed: ${JSON.stringify(item ?? payload)}`,
+    );
+  }
+}
+
 async function processJob(job: IntegrationJob, workerId: string): Promise<"succeeded" | "failed" | "dead_letter"> {
   const fields = validateJob(job);
   const payload = await zohoFetch<ZohoUpsertResponse>(`/crm/v8/${ASSIGNMENT_MODULE}/upsert`, {
@@ -187,6 +254,12 @@ async function processJob(job: IntegrationJob, workerId: string): Promise<"succe
     );
     return markFailed(job, workerId, error);
   }
+
+  // Capacity is authoritative in Supabase. Mirror the current aggregate to the
+  // parent Zoho Volunteer Shift before marking the outbox job complete. If this
+  // fails, the whole job is retried idempotently so CRM never reports a fully
+  // synced assignment while its shift counters are stale.
+  await syncShiftCapacityToZoho(job.entity_id);
 
   const supabase = getSupabaseAdmin();
   const { error: completeError } = await supabase.rpc("complete_zoho_assignment_job", {
