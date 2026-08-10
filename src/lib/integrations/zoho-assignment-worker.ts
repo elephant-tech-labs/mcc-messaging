@@ -44,11 +44,30 @@ const LOOKUP_FIELDS = new Set([
   "Event_Participation",
   "Event",
 ]);
+const DATETIME_FIELDS = new Set([
+  "Selected_At",
+  "Cancelled_At",
+  "Checked_In_At",
+  "Last_Supabase_Sync",
+]);
 
 function requiredText(value: unknown, field: string): string {
   const text = String(value ?? "").trim();
   if (!text) throw new Error(`Missing required assignment field: ${field}`);
   return text;
+}
+
+function toZohoDateTime(value: unknown, field: string): string | null {
+  if (value == null || value === "") return null;
+
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid datetime assignment field: ${field}`);
+  }
+
+  // Zoho CRM datetime fields accept ISO-8601 at second precision with an offset.
+  // Supabase/Postgres can emit microseconds, so deliberately strip fractional seconds.
+  return `${date.toISOString().slice(0, 19)}+00:00`;
 }
 
 function normalizeFields(fields: Record<string, unknown>): Record<string, unknown> {
@@ -59,12 +78,18 @@ function normalizeFields(fields: Record<string, unknown>): Record<string, unknow
       normalized[key] = value == null || value === "" ? null : { id: String(value) };
       continue;
     }
+
+    if (DATETIME_FIELDS.has(key)) {
+      normalized[key] = toZohoDateTime(value, key);
+      continue;
+    }
+
     normalized[key] = value;
   }
 
   normalized.Sync_Status = "Synced";
   normalized.Sync_Error = null;
-  normalized.Last_Supabase_Sync = new Date().toISOString();
+  normalized.Last_Supabase_Sync = toZohoDateTime(new Date(), "Last_Supabase_Sync");
   return normalized;
 }
 
@@ -119,7 +144,8 @@ function classifyFailure(error: unknown): { code: string; retryable: boolean; me
   const isPayloadProblem =
     message.includes("Missing required assignment field") ||
     message.includes("Unexpected assignment module") ||
-    message.includes("Assignment payload fields are missing");
+    message.includes("Assignment payload fields are missing") ||
+    message.includes("Invalid datetime assignment field");
 
   return {
     code: isPayloadProblem ? "INVALID_OUTBOX_PAYLOAD" : "TRANSIENT_WORKER_ERROR",
