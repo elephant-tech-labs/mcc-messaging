@@ -1,4 +1,4 @@
-import ContactMessagingWidget from "./ContactMessagingWidget";
+import ContactMessagingWidget from "./ContactMessagingWidgetV2";
 
 export const dynamic = "force-dynamic";
 
