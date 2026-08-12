@@ -212,7 +212,7 @@ async function executeProxy<T>(args: Record<string, unknown>): Promise<T> {
   if (!sdk) throw new Error("Zoho CRM widget context is unavailable");
 
   const response = await sdk.CRM.FUNCTIONS.execute(PROXY_FUNCTION, {
-    arguments: JSON.stringify(args),
+    arguments: JSON.stringify({ payload: JSON.stringify(args) }),
   });
   const output = unwrapFunctionOutput(response);
 
