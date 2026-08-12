@@ -36,6 +36,33 @@ function cleanObject<T extends Record<string, unknown>>(value: T): T {
   ) as T;
 }
 
+function toZohoDateTime(value?: string | null): string | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid Zoho messaging datetime: ${value}`);
+  }
+
+  // Zoho CRM datetime fields expect ISO-8601 at second precision with an offset.
+  return `${date.toISOString().slice(0, 19)}+00:00`;
+}
+
+function summaryRecord(summary: ZohoConversationSummary) {
+  return cleanObject({
+    Last_Message: summary.lastMessage,
+    Last_Message_At: toZohoDateTime(summary.lastMessageAt),
+    Last_Message_Direction: summary.lastMessageDirection,
+    Last_Message_Status: summary.lastMessageStatus,
+    Unread_Count: summary.unreadCount,
+    Last_Incoming_At: toZohoDateTime(summary.lastIncomingAt),
+    Last_Outgoing_At: toZohoDateTime(summary.lastOutgoingAt),
+    Opt_Out_Status: summary.optOutStatus,
+    Opt_Out_Date: summary.optOutDate,
+  });
+}
+
 export async function createZohoMessagingConversation(input: {
   contactId: string;
   customerPhone: string;
@@ -52,15 +79,11 @@ export async function createZohoMessagingConversation(input: {
     Twilio_Phone: input.twilioPhone,
     Conversation_Status: "Active",
     External_Conversation_ID: input.externalConversationId,
-    Last_Message: summary.lastMessage,
-    Last_Message_At: summary.lastMessageAt,
-    Last_Message_Direction: summary.lastMessageDirection,
-    Last_Message_Status: summary.lastMessageStatus,
-    Unread_Count: summary.unreadCount ?? 0,
-    Last_Incoming_At: summary.lastIncomingAt,
-    Last_Outgoing_At: summary.lastOutgoingAt,
-    Opt_Out_Status: summary.optOutStatus ?? "Active",
-    Opt_Out_Date: summary.optOutDate,
+    ...summaryRecord({
+      ...summary,
+      unreadCount: summary.unreadCount ?? 0,
+      optOutStatus: summary.optOutStatus ?? "Active",
+    }),
     Created_From: input.createdFrom,
   });
 
@@ -87,23 +110,11 @@ export async function updateZohoMessagingConversation(
   zohoConversationId: string,
   summary: ZohoConversationSummary,
 ): Promise<void> {
-  const record = cleanObject({
-    Last_Message: summary.lastMessage,
-    Last_Message_At: summary.lastMessageAt,
-    Last_Message_Direction: summary.lastMessageDirection,
-    Last_Message_Status: summary.lastMessageStatus,
-    Unread_Count: summary.unreadCount,
-    Last_Incoming_At: summary.lastIncomingAt,
-    Last_Outgoing_At: summary.lastOutgoingAt,
-    Opt_Out_Status: summary.optOutStatus,
-    Opt_Out_Date: summary.optOutDate,
-  });
-
   await zohoFetch<ZohoMutationResponse>(
     `/crm/v8/Messaging_Conversations/${encodeURIComponent(zohoConversationId)}`,
     {
       method: "PUT",
-      body: JSON.stringify({ data: [record] }),
+      body: JSON.stringify({ data: [summaryRecord(summary)] }),
     },
   );
 }
