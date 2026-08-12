@@ -103,7 +103,7 @@ export async function POST(request: Request) {
       zohoContactId = contact?.id ?? null;
     } catch (error) {
       console.warn(
-        "Inbound Zoho phone lookup unavailable; storing unmatched conversation",
+        "Inbound Zoho phone lookup unavailable; falling back to existing-thread matching",
         error instanceof Error ? error.message.slice(0, 180) : "Unknown Zoho lookup error",
       );
     }
@@ -113,6 +113,13 @@ export async function POST(request: Request) {
       customerPhone,
       twilioPhone,
     });
+
+    // When secure Zoho phone search is not yet available, a reply can still be
+    // safely attached to exactly one pre-existing conversation for this phone pair.
+    // Reuse that conversation's Contact identity for the CRM summary projection.
+    if (!zohoContactId && conversation.zoho_contact_id) {
+      zohoContactId = conversation.zoho_contact_id;
+    }
 
     const inserted = await insertIncomingMessage({
       conversationId: conversation.id,
