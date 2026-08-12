@@ -35,6 +35,29 @@ export async function findUnmatchedConversation(input: {
   return (data as MessagingConversation | null) ?? null;
 }
 
+export async function findUniqueAssociatedConversationByPhone(input: {
+  customerPhone: string;
+  twilioPhone: string;
+}): Promise<MessagingConversation | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("messaging_conversations")
+    .select("*")
+    .not("zoho_contact_id", "is", null)
+    .eq("customer_phone", input.customerPhone)
+    .eq("twilio_phone", input.twilioPhone)
+    .eq("channel", "SMS")
+    .order("updated_at", { ascending: false })
+    .limit(2);
+
+  throwIfError(error, "Find associated messaging conversation by phone failed");
+  const matches = (data ?? []) as MessagingConversation[];
+
+  // Phone numbers are not guaranteed to be unique across Contacts. Only infer
+  // identity from the existing thread when exactly one associated conversation
+  // exists for this customer/sender pair. Otherwise let Zoho search disambiguate.
+  return matches.length === 1 ? matches[0] : null;
+}
+
 async function createUnmatchedConversation(input: {
   customerPhone: string;
   twilioPhone: string;
@@ -135,6 +158,9 @@ export async function resolveInboundConversation(input: {
       createdFrom: "Incoming SMS",
     });
   }
+
+  const existingAssociated = await findUniqueAssociatedConversationByPhone(input);
+  if (existingAssociated) return existingAssociated;
 
   return createUnmatchedConversation(input);
 }
