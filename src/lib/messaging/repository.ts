@@ -50,6 +50,19 @@ function throwIfError(error: { message?: string } | null, context: string): void
   if (error) throw new Error(`${context}: ${error.message ?? "database error"}`);
 }
 
+export async function getConversationById(
+  conversationId: string,
+): Promise<MessagingConversation | null> {
+  const { data, error } = await getSupabaseAdmin()
+    .from("messaging_conversations")
+    .select("*")
+    .eq("id", conversationId)
+    .maybeSingle();
+
+  throwIfError(error, "Load messaging conversation failed");
+  return (data as MessagingConversation | null) ?? null;
+}
+
 export async function findConversation(input: {
   zohoContactId: string;
   customerPhone: string;
@@ -141,7 +154,7 @@ export async function insertOutgoingMessage(input: {
   toPhone: string;
   sentByZohoUserId?: string | null;
   sentByName?: string | null;
-  source: "CRM Widget" | "Automation";
+  source: "CRM Widget" | "Cliq" | "Automation";
   twilioDateCreated?: Date | null;
   twilioDateSent?: Date | null;
 }): Promise<MessagingMessage> {
