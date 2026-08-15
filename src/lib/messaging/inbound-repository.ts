@@ -16,6 +16,14 @@ function throwIfError(error: { message?: string } | null, context: string): void
   if (error) throw new Error(`${context}: ${error.message ?? "database error"}`);
 }
 
+function isMissingUnreadRpc(error: { code?: string; message?: string } | null): boolean {
+  if (!error) return false;
+  return (
+    error.code === "PGRST202" ||
+    Boolean(error.message?.includes("increment_messaging_unread"))
+  );
+}
+
 export async function findUnmatchedConversation(input: {
   customerPhone: string;
   twilioPhone: string;
@@ -217,14 +225,38 @@ export async function updateIncomingSummary(input: {
   body: string;
   occurredAt: string;
 }): Promise<MessagingConversation> {
-  const { data: unreadData, error: unreadError } = await getSupabaseAdmin().rpc(
+  const admin = getSupabaseAdmin();
+  const { data: unreadData, error: unreadError } = await admin.rpc(
     "increment_messaging_unread",
     { p_conversation_id: input.conversationId },
   );
-  throwIfError(unreadError, "Increment inbound unread count failed");
+
+  let unreadCount = unreadValue(unreadData);
+
+  if (unreadError) {
+    if (!isMissingUnreadRpc(unreadError)) {
+      throwIfError(unreadError, "Increment inbound unread count failed");
+    }
+
+    // Keep inbound SMS processing alive if PostgREST cannot see the helper RPC.
+    // This fallback is not as concurrency-perfect as the DB function, but it is
+    // safe for normal webhook traffic and prevents a schema-cache issue from
+    // blocking persistence, CRM projection, or Cliq notifications.
+    console.warn("Supabase unread RPC unavailable; using direct unread fallback");
+    const { data: current, error: currentError } = await admin
+      .from("messaging_conversations")
+      .select("unread_count")
+      .eq("id", input.conversationId)
+      .single();
+
+    throwIfError(currentError, "Read current inbound unread count failed");
+    const currentUnread =
+      current && typeof current.unread_count === "number" ? current.unread_count : 0;
+    unreadCount = currentUnread + 1;
+  }
 
   const summary = input.body || "[Incoming MMS]";
-  const { data, error } = await getSupabaseAdmin()
+  const { data, error } = await admin
     .from("messaging_conversations")
     .update({
       last_message: summary,
@@ -232,9 +264,7 @@ export async function updateIncomingSummary(input: {
       last_message_direction: "Incoming",
       last_message_status: "received",
       last_incoming_at: input.occurredAt,
-      ...(unreadValue(unreadData) === null
-        ? {}
-        : { unread_count: unreadValue(unreadData) }),
+      ...(unreadCount === null ? {} : { unread_count: unreadCount }),
     })
     .eq("id", input.conversationId)
     .select("*")
