@@ -43,19 +43,6 @@ function handlerType(payload: UnknownRecord): string | null {
   );
 }
 
-function messageText(payload: UnknownRecord): string | null {
-  const message = record(payload.message);
-  const params = record(payload.params);
-  const paramsMessage = record(params.message);
-  return stringValue(
-    message.text,
-    payload.text,
-    paramsMessage.text,
-    params.arguments,
-    params.text,
-  );
-}
-
 function responseUrl(payload: UnknownRecord): string | null {
   return stringValue(payload.response_url, payload.responseUrl);
 }
@@ -99,9 +86,11 @@ async function reply(payload: UnknownRecord, text: string): Promise<NextResponse
     return NextResponse.json({ ok: true });
   }
 
-  // Cliq also supports a synchronous response when it is returned quickly.
-  // Use the same response envelope documented for response_url callbacks.
   return NextResponse.json({ output: { text } });
+}
+
+function silent(): Response {
+  return new Response(null, { status: 204 });
 }
 
 export async function POST(request: Request) {
@@ -134,14 +123,12 @@ export async function POST(request: Request) {
     );
   }
 
+  // Ordinary messages should not generate generic bot chatter. Future reply/search
+  // actions will be explicit button, form, menu, or command handlers.
   if (type === "message_handler") {
-    const text = messageText(payload);
-    console.info("Zoho Cliq message handler parsed", { hasText: Boolean(text) });
-    return reply(
-      payload,
-      "MCC Messages is connected. Contact search and SMS reply actions are the next step being enabled.",
-    );
+    return silent();
   }
 
-  return reply(payload, "MCC Messages is connected.");
+  // Unknown/unhandled bot events are intentionally acknowledged without a message.
+  return silent();
 }
