@@ -29,7 +29,7 @@ export async function sendIncomingSmsCliqNotification(
 ): Promise<BotMessageResponse> {
   const sender = input.contactName?.trim() || input.customerPhone;
   const phoneSuffix = input.contactName?.trim() ? `\n${input.customerPhone}` : "";
-  const text = `📩 **New SMS from ${sender}**${phoneSuffix}\n\n${previewBody(input.body, input.mediaCount)}`;
+  const text = `📩 New SMS from ${sender}${phoneSuffix}\n\n${previewBody(input.body, input.mediaCount)}`;
 
   return cliqFetch<BotMessageResponse>(
     `/bots/${encodeURIComponent(MCC_BOT_UNIQUE_NAME)}/messages`,
@@ -37,7 +37,6 @@ export async function sendIncomingSmsCliqNotification(
       method: "POST",
       body: JSON.stringify({
         text,
-        styles: { markdown: true },
         sync_message: true,
       }),
     },
