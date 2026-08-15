@@ -40,10 +40,11 @@ export type AssignmentWorkerSummary = {
   deadLettered: number;
 };
 
-const ASSIGNMENT_MODULE = "Volunteer_Shift_Assignmen";
+const OUTBOX_ASSIGNMENT_MODULE = "Volunteer_Shift_Assignmen";
+const ASSIGNMENT_MODULE = "Volunteer_Shift_Assignments";
 const SHIFT_MODULE = "Volunteer_Shifts";
 const LOOKUP_FIELDS = new Set([
-  "Shifts",
+  "Volunteer_Shift",
   "Contact",
   "Volunteer_Application",
   "Event_Participation",
@@ -78,7 +79,9 @@ function toZohoDateTime(value: unknown, field: string): string | null {
 function normalizeFields(fields: Record<string, unknown>): Record<string, unknown> {
   const normalized: Record<string, unknown> = {};
 
-  for (const [key, value] of Object.entries(fields)) {
+  for (const [sourceKey, value] of Object.entries(fields)) {
+    const key = sourceKey === "Shifts" ? "Volunteer_Shift" : sourceKey;
+
     if (LOOKUP_FIELDS.has(key)) {
       normalized[key] = value == null || value === "" ? null : { id: String(value) };
       continue;
@@ -92,6 +95,12 @@ function normalizeFields(fields: Record<string, unknown>): Record<string, unknow
     normalized[key] = value;
   }
 
+  const assignmentId = requiredText(
+    fields.Supabase_Assignment_ID,
+    "Supabase_Assignment_ID",
+  );
+  const uniqueKey = requiredText(fields.Assignment_Unique_Key, "Assignment_Unique_Key");
+  normalized.Name = `VSA-${uniqueKey || assignmentId}`.slice(0, 120);
   normalized.Sync_Status = "Synced";
   normalized.Sync_Error = null;
   normalized.Last_Supabase_Sync = toZohoDateTime(new Date(), "Last_Supabase_Sync");
@@ -99,8 +108,12 @@ function normalizeFields(fields: Record<string, unknown>): Record<string, unknow
 }
 
 function validateJob(job: IntegrationJob): Record<string, unknown> {
-  if (job.payload?.module !== ASSIGNMENT_MODULE) {
-    throw new Error(`Unexpected assignment module: ${String(job.payload?.module ?? "")}`);
+  const payloadModule = String(job.payload?.module ?? "");
+  if (
+    payloadModule !== OUTBOX_ASSIGNMENT_MODULE &&
+    payloadModule !== ASSIGNMENT_MODULE
+  ) {
+    throw new Error(`Unexpected assignment module: ${payloadModule}`);
   }
 
   const fields = job.payload?.fields;
@@ -108,7 +121,7 @@ function validateJob(job: IntegrationJob): Record<string, unknown> {
     throw new Error("Assignment payload fields are missing");
   }
 
-  requiredText(fields.Shifts, "Shifts");
+  requiredText(fields.Shifts ?? fields.Volunteer_Shift, "Volunteer_Shift");
   requiredText(fields.Volunteer_Application, "Volunteer_Application");
   requiredText(fields.Supabase_Assignment_ID, "Supabase_Assignment_ID");
   requiredText(fields.Assignment_Unique_Key, "Assignment_Unique_Key");
