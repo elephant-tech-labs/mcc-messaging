@@ -39,12 +39,21 @@ function legacyName(bot: CliqBot, allBots: CliqBot[]): string {
   throw new Error("Unable to choose a safe temporary name for the existing empty MCC bot.");
 }
 
+function isMissingHandlerError(error: unknown): boolean {
+  if (!(error instanceof CliqApiError)) return false;
+  if (error.status === 404) return true;
+
+  if (error.status === 400 && error.payload && typeof error.payload === "object") {
+    const payload = error.payload as { code?: unknown };
+    return payload.code === "execution_handler_not_found";
+  }
+
+  return false;
+}
+
 async function ensureLegacyShellHasHandler(bot: CliqBot): Promise<void> {
   if ((bot.handlers ?? []).length > 0) return;
 
-  // Cliq's bot-update API can reject a completely handler-less Deluge shell with
-  // execution_handler_not_found. Add a harmless placeholder so the user's empty
-  // setup shell can be renamed and preserved rather than deleted.
   await cliqFetch(`/bots/${encodeURIComponent(bot.id)}/handlers`, {
     method: "POST",
     body: JSON.stringify({
@@ -124,7 +133,9 @@ async function ensureHandler(
     await cliqFetch(`/bots/${encodeURIComponent(botId)}/handlers/${type}`);
     return "existing";
   } catch (error) {
-    if (!(error instanceof CliqApiError) || error.status !== 404) throw error;
+    // Cliq v3 returns HTTP 400 with execution_handler_not_found when the
+    // requested handler does not yet exist. Treat that as the create path.
+    if (!isMissingHandlerError(error)) throw error;
   }
 
   await cliqFetch(`/bots/${encodeURIComponent(botId)}/handlers`, {
