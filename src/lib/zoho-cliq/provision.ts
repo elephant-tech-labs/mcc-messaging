@@ -2,6 +2,7 @@ import { requiredEnv } from "@/lib/env";
 import { CliqApiError, cliqFetch } from "@/lib/zoho-cliq/client";
 
 const BOT_NAME = "MCC Messages";
+const LEGACY_PREFIX = "MCC Empty";
 
 type CliqBot = {
   id: string;
@@ -15,19 +16,71 @@ type CliqBot = {
 type ListBotsResponse = { data?: CliqBot[] };
 type BotResponse = { data: CliqBot };
 
+type ProvisionResult = {
+  bot: CliqBot;
+  created: boolean;
+  renamedLegacyBot?: { id: string; oldName: string; newName: string };
+};
+
 function botExecutionUrl(): string {
   const baseUrl = requiredEnv("APP_BASE_URL").replace(/\/$/, "");
   const secret = encodeURIComponent(requiredEnv("ZOHO_CLIQ_WEBHOOK_SECRET"));
   return `${baseUrl}/api/cliq/bot?secret=${secret}`;
 }
 
-async function getOrCreateBot(): Promise<{ bot: CliqBot; created: boolean }> {
+function legacyName(bot: CliqBot, allBots: CliqBot[]): string {
+  const suffix = bot.id.slice(-4);
+  const preferred = `${LEGACY_PREFIX} ${suffix}`.slice(0, 20);
+  if (!allBots.some((item) => item.name === preferred)) return preferred;
+
+  const fallback = `MCC Setup ${suffix}`.slice(0, 20);
+  if (!allBots.some((item) => item.name === fallback)) return fallback;
+
+  throw new Error("Unable to choose a safe temporary name for the existing empty MCC bot.");
+}
+
+async function createWebhookBot(): Promise<CliqBot> {
+  const created = await cliqFetch<BotResponse>("/bots", {
+    method: "POST",
+    body: JSON.stringify({
+      name: BOT_NAME,
+      description: "Send and receive Military Creator Con SMS conversations from Zoho Cliq.",
+      scope: "organization",
+      execution_type: "webhook",
+      execution_url: botExecutionUrl(),
+      status_messages: ["MCC SMS messaging"],
+      calls: "disabled",
+    }),
+  });
+
+  return created.data;
+}
+
+async function getOrCreateBot(): Promise<ProvisionResult> {
   const existing = await cliqFetch<ListBotsResponse>("/bots");
-  const bot = (existing.data ?? []).find((item) => item.name === BOT_NAME);
+  const allBots = existing.data ?? [];
+  const bot = allBots.find((item) => item.name === BOT_NAME);
 
   if (bot) {
     if (bot.execution_type && bot.execution_type !== "webhook") {
-      throw new Error(`A Cliq bot named ${BOT_NAME} already exists but is not a webhook bot.`);
+      // The user confirmed this is the empty shell they manually created earlier.
+      // Cliq cannot convert a Deluge bot into a Webhook bot after creation, so
+      // preserve it under a harmless temporary display name and create the real bot.
+      const newName = legacyName(bot, allBots);
+      await cliqFetch<BotResponse>(`/bots/${encodeURIComponent(bot.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: newName,
+          description: "Unused setup shell preserved while MCC Messages moved to webhook execution.",
+        }),
+      });
+
+      const webhookBot = await createWebhookBot();
+      return {
+        bot: webhookBot,
+        created: true,
+        renamedLegacyBot: { id: bot.id, oldName: BOT_NAME, newName },
+      };
     }
 
     const executionUrl = botExecutionUrl();
@@ -42,20 +95,7 @@ async function getOrCreateBot(): Promise<{ bot: CliqBot; created: boolean }> {
     return { bot, created: false };
   }
 
-  const created = await cliqFetch<BotResponse>("/bots", {
-    method: "POST",
-    body: JSON.stringify({
-      name: BOT_NAME,
-      description: "Send and receive Military Creator Con SMS conversations from Zoho Cliq.",
-      scope: "organization",
-      execution_type: "webhook",
-      execution_url: botExecutionUrl(),
-      status_messages: ["MCC SMS messaging"],
-      calls: "disabled",
-    }),
-  });
-
-  return { bot: created.data, created: true };
+  return { bot: await createWebhookBot(), created: true };
 }
 
 async function ensureHandler(
@@ -78,7 +118,7 @@ async function ensureHandler(
 }
 
 export async function provisionMccCliqBot() {
-  const { bot, created } = await getOrCreateBot();
+  const { bot, created, renamedLegacyBot } = await getOrCreateBot();
   const welcomeHandler = await ensureHandler(bot.id, "welcome_handler", ["user"]);
   const messageHandler = await ensureHandler(bot.id, "message_handler", ["chat", "message", "user"]);
 
@@ -90,6 +130,7 @@ export async function provisionMccCliqBot() {
       executionType: bot.execution_type ?? "webhook",
     },
     botCreated: created,
+    ...(renamedLegacyBot ? { renamedLegacyBot } : {}),
     handlers: {
       welcome: welcomeHandler,
       message: messageHandler,
