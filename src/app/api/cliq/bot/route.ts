@@ -45,7 +45,63 @@ function handlerType(payload: UnknownRecord): string | null {
 
 function messageText(payload: UnknownRecord): string | null {
   const message = record(payload.message);
-  return stringValue(message.text, payload.text);
+  const params = record(payload.params);
+  const paramsMessage = record(params.message);
+  return stringValue(
+    message.text,
+    payload.text,
+    paramsMessage.text,
+    params.arguments,
+    params.text,
+  );
+}
+
+function responseUrl(payload: UnknownRecord): string | null {
+  return stringValue(payload.response_url, payload.responseUrl);
+}
+
+function isAllowedCliqResponseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /^cliq\.zoho\.[a-z.]+$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function sendCliqResponse(payload: UnknownRecord, text: string): Promise<boolean> {
+  const callbackUrl = responseUrl(payload);
+  if (!callbackUrl || !isAllowedCliqResponseUrl(callbackUrl)) return false;
+
+  const response = await fetch(callbackUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ output: { text } }),
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const body = (await response.text()).slice(0, 500);
+    console.error("Zoho Cliq response callback failed", {
+      status: response.status,
+      body,
+    });
+    return false;
+  }
+
+  return true;
+}
+
+async function reply(payload: UnknownRecord, text: string): Promise<NextResponse> {
+  const delivered = await sendCliqResponse(payload, text);
+
+  if (delivered) {
+    return NextResponse.json({ ok: true });
+  }
+
+  // Cliq also supports a synchronous response when it is returned quickly.
+  // Use the same response envelope documented for response_url callbacks.
+  return NextResponse.json({ output: { text } });
 }
 
 export async function POST(request: Request) {
@@ -63,27 +119,29 @@ export async function POST(request: Request) {
   }
 
   const type = handlerType(payload);
+  const params = record(payload.params);
   console.info("Zoho Cliq bot event received", {
     handlerType: type ?? "unknown",
     payloadKeys: Object.keys(payload).slice(0, 20),
+    paramKeys: Object.keys(params).slice(0, 20),
+    hasResponseUrl: Boolean(responseUrl(payload)),
   });
 
   if (type === "welcome_handler") {
-    return NextResponse.json({
-      text: "MCC Messages is connected. You’ll be able to receive and reply to MCC SMS conversations here.",
-    });
+    return reply(
+      payload,
+      "MCC Messages is connected. You’ll be able to receive and reply to MCC SMS conversations here.",
+    );
   }
 
   if (type === "message_handler") {
     const text = messageText(payload);
-    if (text) {
-      return NextResponse.json({
-        text: "MCC Messages is connected. Contact search and SMS reply actions are the next step being enabled.",
-      });
-    }
+    console.info("Zoho Cliq message handler parsed", { hasText: Boolean(text) });
+    return reply(
+      payload,
+      "MCC Messages is connected. Contact search and SMS reply actions are the next step being enabled.",
+    );
   }
 
-  return NextResponse.json({
-    text: "MCC Messages is connected.",
-  });
+  return reply(payload, "MCC Messages is connected.");
 }
