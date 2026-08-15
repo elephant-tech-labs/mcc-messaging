@@ -100,8 +100,6 @@ export async function POST(request: Request) {
     const twilioPhone = normalizePhone(to);
     const configuredTwilioPhone = normalizePhone(requiredEnv("TWILIO_PHONE_NUMBER"));
 
-    // A valid Twilio account can own multiple numbers. Only ingest traffic for
-    // the MCC sender configured for this service.
     if (twilioPhone !== configuredTwilioPhone) {
       return twiml();
     }
@@ -110,8 +108,6 @@ export async function POST(request: Request) {
     const media = mediaFromParams(params);
     const occurredAt = new Date().toISOString();
 
-    // Phone lookup is intentionally best-effort until ZohoSearch.securesearch.READ
-    // is added. A lookup failure must never cause an inbound SMS to be lost.
     let zohoContactId: string | null = null;
     let contactName: string | null = null;
     try {
@@ -131,16 +127,10 @@ export async function POST(request: Request) {
       twilioPhone,
     });
 
-    // When secure Zoho phone search is not yet available, a reply can still be
-    // safely attached to exactly one pre-existing conversation for this phone pair.
-    // Reuse that conversation's Contact identity for the CRM summary projection.
     if (!zohoContactId && conversation.zoho_contact_id) {
       zohoContactId = conversation.zoho_contact_id;
     }
 
-    // Contacts.READ is already part of the MCC CRM OAuth scopes. If phone search
-    // could not resolve the contact but the existing thread did, use that known ID
-    // to enrich the Cliq notification with the contact's name.
     if (!contactName && zohoContactId) {
       try {
         contactName = contactDisplayName(await getZohoContactById(zohoContactId));
@@ -161,8 +151,6 @@ export async function POST(request: Request) {
       media,
     });
 
-    // Twilio may retry the same webhook. MessageSid idempotency prevents both a
-    // duplicate message row and a second unread increment/notification.
     if (!inserted.inserted) {
       return twiml();
     }
@@ -192,8 +180,6 @@ export async function POST(request: Request) {
       optOutChanged = true;
     }
 
-    // CRM is a summary/projection. Once Supabase has durably stored the inbound
-    // message, CRM sync errors are recoverable and must not trigger Twilio retry.
     if (zohoContactId) {
       try {
         const crmSummary = {
@@ -244,10 +230,9 @@ export async function POST(request: Request) {
       }
     }
 
-    // Cliq is another projection/notification surface, not the canonical store.
-    // A Cliq outage must never cause Twilio to retry a message already persisted.
     try {
       await sendIncomingSmsCliqNotification({
+        conversationId: conversation.id,
         contactName,
         customerPhone,
         body: summaryBody,
@@ -262,8 +247,6 @@ export async function POST(request: Request) {
 
     return twiml();
   } catch (error) {
-    // Persistence/validation failure should be visible to Twilio so its normal
-    // webhook retry behavior can protect against message loss.
     console.error(
       "Inbound SMS persistence failed",
       error instanceof Error ? error.message.slice(0, 220) : "Unknown inbound error",
