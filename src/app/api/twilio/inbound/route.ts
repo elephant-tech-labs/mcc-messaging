@@ -12,11 +12,16 @@ import {
   formDataToRecord,
   validateTwilioWebhook,
 } from "@/lib/twilio/validate";
-import { findZohoContactByPhone } from "@/lib/zoho/contacts";
+import {
+  findZohoContactByPhone,
+  getZohoContactById,
+  type ZohoContact,
+} from "@/lib/zoho/contacts";
 import {
   createZohoMessagingConversation,
   updateZohoMessagingConversation,
 } from "@/lib/zoho/conversations";
+import { sendIncomingSmsCliqNotification } from "@/lib/zoho-cliq/messages";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,6 +64,16 @@ function displayBody(body: string, mediaCount: number): string {
   return mediaCount > 0 ? `[Incoming MMS: ${mediaCount} attachment${mediaCount === 1 ? "" : "s"}]` : "[Incoming SMS]";
 }
 
+function contactDisplayName(contact: ZohoContact | null): string | null {
+  if (!contact) return null;
+  if (contact.Full_Name?.trim()) return contact.Full_Name.trim();
+  const combined = [contact.First_Name, contact.Last_Name]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .join(" ")
+    .trim();
+  return combined || null;
+}
+
 export async function POST(request: Request) {
   let params: Record<string, string>;
   try {
@@ -98,9 +113,11 @@ export async function POST(request: Request) {
     // Phone lookup is intentionally best-effort until ZohoSearch.securesearch.READ
     // is added. A lookup failure must never cause an inbound SMS to be lost.
     let zohoContactId: string | null = null;
+    let contactName: string | null = null;
     try {
       const contact = await findZohoContactByPhone(customerPhone);
       zohoContactId = contact?.id ?? null;
+      contactName = contactDisplayName(contact);
     } catch (error) {
       console.warn(
         "Inbound Zoho phone lookup unavailable; falling back to existing-thread matching",
@@ -121,6 +138,20 @@ export async function POST(request: Request) {
       zohoContactId = conversation.zoho_contact_id;
     }
 
+    // Contacts.READ is already part of the MCC CRM OAuth scopes. If phone search
+    // could not resolve the contact but the existing thread did, use that known ID
+    // to enrich the Cliq notification with the contact's name.
+    if (!contactName && zohoContactId) {
+      try {
+        contactName = contactDisplayName(await getZohoContactById(zohoContactId));
+      } catch (error) {
+        console.warn(
+          "Inbound Zoho contact-name lookup failed; Cliq will show phone only",
+          error instanceof Error ? error.message.slice(0, 180) : "Unknown Zoho contact lookup error",
+        );
+      }
+    }
+
     const inserted = await insertIncomingMessage({
       conversationId: conversation.id,
       twilioMessageSid: messageSid,
@@ -131,7 +162,7 @@ export async function POST(request: Request) {
     });
 
     // Twilio may retry the same webhook. MessageSid idempotency prevents both a
-    // duplicate message row and a second unread increment.
+    // duplicate message row and a second unread increment/notification.
     if (!inserted.inserted) {
       return twiml();
     }
@@ -211,6 +242,22 @@ export async function POST(request: Request) {
           error instanceof Error ? error.message.slice(0, 180) : "Unknown CRM sync error",
         );
       }
+    }
+
+    // Cliq is another projection/notification surface, not the canonical store.
+    // A Cliq outage must never cause Twilio to retry a message already persisted.
+    try {
+      await sendIncomingSmsCliqNotification({
+        contactName,
+        customerPhone,
+        body: summaryBody,
+        mediaCount: media.length,
+      });
+    } catch (error) {
+      console.warn(
+        "Inbound Cliq notification failed after durable message storage",
+        error instanceof Error ? error.message.slice(0, 220) : "Unknown Cliq notification error",
+      );
     }
 
     return twiml();
