@@ -39,6 +39,21 @@ function legacyName(bot: CliqBot, allBots: CliqBot[]): string {
   throw new Error("Unable to choose a safe temporary name for the existing empty MCC bot.");
 }
 
+async function ensureLegacyShellHasHandler(bot: CliqBot): Promise<void> {
+  if ((bot.handlers ?? []).length > 0) return;
+
+  // Cliq's bot-update API can reject a completely handler-less Deluge shell with
+  // execution_handler_not_found. Add a harmless placeholder so the user's empty
+  // setup shell can be renamed and preserved rather than deleted.
+  await cliqFetch(`/bots/${encodeURIComponent(bot.id)}/handlers`, {
+    method: "POST",
+    body: JSON.stringify({
+      type: "welcome_handler",
+      script: 'response = Map();\nresponse.put("text", "Unused MCC setup shell.");\nreturn response;',
+    }),
+  });
+}
+
 async function createWebhookBot(): Promise<CliqBot> {
   const created = await cliqFetch<BotResponse>("/bots", {
     method: "POST",
@@ -66,6 +81,8 @@ async function getOrCreateBot(): Promise<ProvisionResult> {
       // The user confirmed this is the empty shell they manually created earlier.
       // Cliq cannot convert a Deluge bot into a Webhook bot after creation, so
       // preserve it under a harmless temporary display name and create the real bot.
+      await ensureLegacyShellHasHandler(bot);
+
       const newName = legacyName(bot, allBots);
       await cliqFetch<BotResponse>(`/bots/${encodeURIComponent(bot.id)}`, {
         method: "PATCH",
