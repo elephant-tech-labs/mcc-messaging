@@ -190,17 +190,8 @@ export async function POST(request: Request) {
   }
 
   const type = handlerType(payload);
-  const params = record(payload.params);
   const handler = record(payload.handler);
   const handlerName = stringValue(handler.name);
-  console.info("Zoho Cliq bot event received", {
-    handlerType: type ?? "unknown",
-    handlerName,
-    handlerDeclaredType: stringValue(handler.type),
-    payloadKeys: Object.keys(payload).slice(0, 20),
-    paramKeys: Object.keys(params).slice(0, 20),
-    hasResponseUrl: Boolean(responseUrl(payload)),
-  });
 
   if (type === "welcome_handler") {
     return reply(
