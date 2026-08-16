@@ -34,12 +34,6 @@ type ZohoSdk = {
   };
 };
 
-declare global {
-  interface Window {
-    ZOHO?: ZohoSdk;
-  }
-}
-
 type ContactView = {
   id: string;
   name: string | null;
@@ -126,8 +120,12 @@ type SendPayload = {
 const SDK_URL = "https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js";
 const PROXY_FUNCTION = "mcc_messaging_widget_proxy";
 
+function getZohoSdk(): ZohoSdk | undefined {
+  return (window as Window & { ZOHO?: ZohoSdk }).ZOHO;
+}
+
 function loadZohoSdk(): Promise<void> {
-  if (window.ZOHO) return Promise.resolve();
+  if (getZohoSdk()) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const existing = document.querySelector<HTMLScriptElement>(`script[src="${SDK_URL}"]`);
     if (existing) {
@@ -171,7 +169,7 @@ function unwrapFunctionOutput(value: unknown): unknown {
 }
 
 async function executeProxy<T>(args: Record<string, unknown>): Promise<T> {
-  const sdk = window.ZOHO;
+  const sdk = getZohoSdk();
   if (!sdk) throw new Error("Zoho CRM widget context is unavailable");
   const response = await sdk.CRM.FUNCTIONS.execute(PROXY_FUNCTION, {
     arguments: JSON.stringify({ payload: JSON.stringify(args) }),
@@ -363,7 +361,7 @@ export default function MccMessagingInbox() {
     async function bootstrap() {
       try {
         await loadZohoSdk();
-        const sdk = window.ZOHO;
+        const sdk = getZohoSdk();
         if (!sdk || cancelled) return;
         sdk.embeddedApp.on("PageLoad", () => undefined);
         await Promise.resolve(sdk.embeddedApp.init());
