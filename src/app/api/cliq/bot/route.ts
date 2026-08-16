@@ -1,11 +1,14 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { requiredEnv } from "@/lib/env";
+import { cliqFetch } from "@/lib/zoho-cliq/client";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const NEW_SMS_FUNCTION_NAME = "mccnewsms";
+const MCC_BOT_UNIQUE_NAME = "mccmessagesx";
+const NEW_SMS_MENU_NAME = "New SMS";
+const COMPOSE_FUNCTION_NAME = "mccsmscompose";
 type UnknownRecord = Record<string, unknown>;
 
 function safeEqual(left: string | null, right: string): boolean {
@@ -24,6 +27,7 @@ function record(value: unknown): UnknownRecord {
 function stringValue(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
   return null;
 }
@@ -90,33 +94,42 @@ async function reply(payload: UnknownRecord, text: string): Promise<NextResponse
   return NextResponse.json({ output: { text } });
 }
 
-function newSmsForm(): UnknownRecord {
-  // Keep this intentionally minimal while validating Zoho Cliq's webhook bot-menu
-  // form rendering contract. Once this renders, the CRM dynamic selector is added
-  // back independently so we can isolate platform validation errors cleanly.
-  return {
-    type: "form",
-    title: "New MCC SMS",
-    name: "mcc_new_sms",
-    version: 1,
-    hint: "Start a new MCC SMS conversation.",
-    button_label: "Continue",
-    action: {
-      type: "invoke.function",
-      name: NEW_SMS_FUNCTION_NAME,
-    },
-    inputs: [
-      {
-        type: "textarea",
-        name: "message",
-        label: "SMS Message",
-        placeholder: "Type your message",
-        mandatory: true,
-        min_length: 1,
-        max_length: 1600,
-      },
-    ],
-  };
+function cliqUserId(payload: UnknownRecord): string | null {
+  const params = record(payload.params);
+  const user = record(params.user ?? payload.user);
+  const access = record(params.access ?? payload.access);
+  return stringValue(
+    user.id,
+    user.user_id,
+    user.userId,
+    user.zuid,
+    access.user_id,
+    access.userId,
+    access.zuid,
+    access.id,
+  );
+}
+
+async function sendComposePrompt(userId: string): Promise<void> {
+  await cliqFetch(`/bots/${encodeURIComponent(MCC_BOT_UNIQUE_NAME)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({
+      text: "Start a new MCC SMS conversation.",
+      buttons: [
+        {
+          label: "Compose SMS",
+          type: "+",
+          action: {
+            type: "invoke.function",
+            data: { name: COMPOSE_FUNCTION_NAME },
+          },
+        },
+      ],
+      user_ids: userId,
+      sync_message: true,
+      mark_as_read: true,
+    }),
+  });
 }
 
 function silent(): Response {
@@ -140,9 +153,10 @@ export async function POST(request: Request) {
   const type = handlerType(payload);
   const params = record(payload.params);
   const handler = record(payload.handler);
+  const handlerName = stringValue(handler.name);
   console.info("Zoho Cliq bot event received", {
     handlerType: type ?? "unknown",
-    handlerName: stringValue(handler.name),
+    handlerName,
     handlerDeclaredType: stringValue(handler.type),
     payloadKeys: Object.keys(payload).slice(0, 20),
     paramKeys: Object.keys(params).slice(0, 20),
@@ -156,11 +170,30 @@ export async function POST(request: Request) {
     );
   }
 
-  // Zoho currently identifies this Webhook Bot menu click as action_handler.
-  // Bot menu handlers must return their response synchronously; response_url is
-  // not supported for this handler type.
-  if (type === "menu_handler" || type === "action_handler") {
-    return NextResponse.json(newSmsForm());
+  if (
+    (type === "menu_handler" || type === "action_handler") &&
+    (!handlerName || handlerName.toLowerCase() === NEW_SMS_MENU_NAME.toLowerCase())
+  ) {
+    const userId = cliqUserId(payload);
+    if (!userId) {
+      const access = record(params.access ?? payload.access);
+      const user = record(params.user ?? payload.user);
+      console.warn("Cliq New SMS menu could not resolve the invoking user", {
+        accessKeys: Object.keys(access).slice(0, 20),
+        userKeys: Object.keys(user).slice(0, 20),
+      });
+      return silent();
+    }
+
+    try {
+      await sendComposePrompt(userId);
+    } catch (error) {
+      console.error(
+        "Cliq New SMS compose prompt failed",
+        error instanceof Error ? error.message.slice(0, 220) : "Unknown compose prompt error",
+      );
+    }
+    return silent();
   }
 
   if (type === "message_handler") return silent();
