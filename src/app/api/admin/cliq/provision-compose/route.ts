@@ -72,12 +72,14 @@ export async function POST(request: Request) {
       throw new Error("New SMS menu handler was not found or has no handler ID.");
     }
 
+    // Target the existing menu variant by handler_id and update permissions only.
+    // Re-sending the unchanged menu name causes Zoho Cliq to reject the PATCH
+    // with bot_actions_name_exists because it re-validates the action name.
     await cliqFetch(
       `/bots/${encodeURIComponent(bot.id)}/handlers/menu_handler?handler_id=${encodeURIComponent(menu.id)}`,
       {
         method: "PATCH",
         body: JSON.stringify({
-          name: MENU_NAME,
           permissions: ["chat", "user"],
         }),
       },
