@@ -1,9 +1,11 @@
 import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { requiredEnv } from "@/lib/env";
+import { markConversationRead } from "@/lib/messaging/inbox";
 import { getConversationById, type MessagingMessage } from "@/lib/messaging/repository";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getZohoContactById } from "@/lib/zoho/contacts";
+import { updateZohoMessagingConversation } from "@/lib/zoho/conversations";
 import { zohoContactRecordUrl } from "@/lib/zoho/crm-url";
 
 export const runtime = "nodejs";
@@ -129,7 +131,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const conversation = await getConversationById(conversationId);
+    let conversation = await getConversationById(conversationId);
     if (!conversation) {
       return sendCliqResponse(payload, { text: "This SMS conversation could not be found." });
     }
@@ -142,6 +144,29 @@ export async function POST(request: Request) {
       .limit(10);
 
     if (error) throw new Error(`Load conversation messages failed: ${error.message}`);
+
+    if (conversation.unread_count > 0) {
+      try {
+        conversation = await markConversationRead(conversation.id);
+        if (conversation.zoho_conversation_id) {
+          try {
+            await updateZohoMessagingConversation(conversation.zoho_conversation_id, {
+              unreadCount: 0,
+            });
+          } catch (error) {
+            console.warn(
+              "Zoho Cliq conversation read-state CRM sync failed",
+              error instanceof Error ? error.message.slice(0, 180) : "Unknown CRM sync error",
+            );
+          }
+        }
+      } catch (error) {
+        console.warn(
+          "Zoho Cliq conversation read-state update failed",
+          error instanceof Error ? error.message.slice(0, 180) : "Unknown read-state error",
+        );
+      }
+    }
 
     const messages = ((data ?? []) as MessagingMessage[]).reverse();
     let contactName: string | null = null;
