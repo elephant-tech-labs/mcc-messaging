@@ -233,6 +233,7 @@ export async function POST(request: Request) {
     try {
       await sendIncomingSmsCliqNotification({
         conversationId: conversation.id,
+        zohoContactId,
         contactName,
         customerPhone,
         body: summaryBody,
