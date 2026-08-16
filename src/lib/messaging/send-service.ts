@@ -50,11 +50,6 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 300) : "Unknown error";
 }
 
-function isCliqSourceConstraintError(error: unknown): boolean {
-  const value = error instanceof Error ? error.message : String(error ?? "");
-  return value.includes("messaging_messages_source_check");
-}
-
 async function resolveConversation(input: SendSmsInput): Promise<{
   conversation: MessagingConversation;
   zohoContactId: string;
@@ -119,45 +114,6 @@ async function resolveConversation(input: SendSmsInput): Promise<{
   };
 }
 
-async function persistOutgoingMessage(input: {
-  conversationId: string;
-  messageSid: string;
-  body: string;
-  status: string;
-  fromPhone: string;
-  toPhone: string;
-  sentByZohoUserId: string | null;
-  sentByName: string | null;
-  source: SmsSendSource;
-  dateCreated: Date | null;
-  dateSent: Date | null;
-}): Promise<void> {
-  const persist = (source: SmsSendSource) =>
-    insertOutgoingMessage({
-      conversationId: input.conversationId,
-      twilioMessageSid: input.messageSid,
-      body: input.body,
-      status: input.status,
-      fromPhone: input.fromPhone,
-      toPhone: input.toPhone,
-      sentByZohoUserId: input.sentByZohoUserId,
-      sentByName: input.sentByName,
-      source,
-      twilioDateCreated: input.dateCreated,
-      twilioDateSent: input.dateSent,
-    });
-
-  try {
-    await persist(input.source);
-  } catch (error) {
-    // Safe rolling-deploy compatibility: once the Supabase source constraint
-    // migration is live, Cliq is stored natively. Until then, preserve delivery
-    // and sender identity using the previously allowed Automation source.
-    if (input.source !== "Cliq" || !isCliqSourceConstraintError(error)) throw error;
-    await persist("Automation");
-  }
-}
-
 export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
   const body = input.body.trim();
   if (!body) throw new SmsSendError("body is required", 400);
@@ -198,9 +154,9 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : new Date()
   ).toISOString();
 
-  await persistOutgoingMessage({
+  await insertOutgoingMessage({
     conversationId: conversation.id,
-    messageSid: twilioMessage.sid,
+    twilioMessageSid: twilioMessage.sid,
     body,
     status: twilioMessage.status,
     fromPhone: twilioPhone,
@@ -208,9 +164,9 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
     sentByName: input.sentByName?.trim() || null,
     source: input.source,
-    dateCreated:
+    twilioDateCreated:
       twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
-    dateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
+    twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
   });
 
   conversation = await updateOutgoingSummary({
