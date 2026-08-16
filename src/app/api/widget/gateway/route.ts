@@ -3,6 +3,7 @@ import { hasValidWidgetKey } from "@/lib/auth/widget-key";
 import {
   createBulkSmsJob,
   getBulkSmsJobStatus,
+  listBulkSmsJobs,
   previewBulkSmsRecipients,
   processBulkSmsBatch,
 } from "@/lib/messaging/bulk-sms";
@@ -43,7 +44,8 @@ type WidgetAction =
   | "bulkPreview"
   | "bulkCreate"
   | "bulkProcess"
-  | "bulkStatus";
+  | "bulkStatus"
+  | "bulkList";
 
 type WidgetRequest = {
   action?: WidgetAction;
@@ -140,13 +142,18 @@ export async function POST(request: Request) {
   const supported: WidgetAction[] = [
     "history", "historyPoll", "historyOlder", "send", "inbox",
     "conversation", "conversationPoll", "conversationOlder", "searchContacts",
-    "bulkPreview", "bulkCreate", "bulkProcess", "bulkStatus",
+    "bulkPreview", "bulkCreate", "bulkProcess", "bulkStatus", "bulkList",
   ];
   if (!action || !supported.includes(action)) {
     return NextResponse.json({ error: "Unsupported widget action" }, { status: 400 });
   }
 
   try {
+    if (action === "bulkList") {
+      const jobs = await listBulkSmsJobs(30);
+      return NextResponse.json({ ok: true, jobs });
+    }
+
     if (action === "bulkPreview") {
       const contactIds = cleanContactIds(input.contactIds);
       if (contactIds.length === 0) return NextResponse.json({ error: "Select at least one Contact" }, { status: 400 });
