@@ -96,6 +96,16 @@ async function reply(payload: UnknownRecord, text: string): Promise<NextResponse
   return NextResponse.json({ output: { text } });
 }
 
+function banner(text: string, status: "success" | "failure" = "success"): NextResponse {
+  return NextResponse.json({
+    output: {
+      type: "banner",
+      status,
+      text,
+    },
+  });
+}
+
 function cliqUserId(payload: UnknownRecord): string | null {
   const params = record(payload.params);
   const user = record(params.user ?? payload.user);
@@ -207,33 +217,35 @@ export async function POST(request: Request) {
     if (normalizedName === NEW_SMS_MENU_NAME.toLowerCase()) {
       if (!userId) {
         console.warn("Cliq New SMS menu could not resolve the invoking user");
-        return silent();
+        return banner("Could not open the SMS composer. Please try again.", "failure");
       }
       try {
         await sendComposePrompt(userId);
+        return banner("SMS composer ready.");
       } catch (error) {
         console.error(
           "Cliq New SMS compose prompt failed",
           error instanceof Error ? error.message.slice(0, 220) : "Unknown compose prompt error",
         );
+        return banner("Could not open the SMS composer. Please try again.", "failure");
       }
-      return silent();
     }
 
     if (normalizedName === INBOX_MENU_NAME.toLowerCase()) {
       if (!userId) {
         console.warn("Cliq Inbox menu could not resolve the invoking user");
-        return silent();
+        return banner("Could not open the SMS inbox. Please try again.", "failure");
       }
       try {
         await sendInboxPrompt(userId);
+        return banner("SMS inbox ready.");
       } catch (error) {
         console.error(
           "Cliq Inbox prompt failed",
           error instanceof Error ? error.message.slice(0, 220) : "Unknown inbox prompt error",
         );
+        return banner("Could not open the SMS inbox. Please try again.", "failure");
       }
-      return silent();
     }
   }
 
