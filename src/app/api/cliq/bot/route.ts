@@ -111,7 +111,12 @@ function newSmsForm(): UnknownRecord {
         hint: "Search by contact name. Only Contacts with a Phone value can be selected.",
         placeholder: "Start typing a contact name",
         mandatory: true,
-        options: [],
+        options: [
+          {
+            label: "Start typing to search CRM",
+            value: "scope_required",
+          },
+        ],
       },
       {
         type: "textarea",
@@ -150,9 +155,10 @@ export async function POST(request: Request) {
   const handler = record(payload.handler);
   console.info("Zoho Cliq bot event received", {
     handlerType: type ?? "unknown",
+    handlerName: stringValue(handler.name),
+    handlerDeclaredType: stringValue(handler.type),
     payloadKeys: Object.keys(payload).slice(0, 20),
     paramKeys: Object.keys(params).slice(0, 20),
-    handlerKeys: Object.keys(handler).slice(0, 20),
     hasResponseUrl: Boolean(responseUrl(payload)),
   });
 
@@ -163,15 +169,13 @@ export async function POST(request: Request) {
     );
   }
 
-  // Zoho's webhook payload currently identifies a bot-menu invocation as
-  // action_handler even though the configured execution handler is menu_handler.
-  // Webhook execution responses are wrapped in `output` before Cliq renders them.
+  // Zoho currently labels this webhook bot-menu invocation as action_handler.
+  // Bot menu handlers support forms as synchronous responses, so return the
+  // documented form object directly.
   if (type === "menu_handler" || type === "action_handler") {
-    return NextResponse.json({ output: newSmsForm() });
+    return NextResponse.json(newSmsForm());
   }
 
-  // Ordinary messages should not generate generic bot chatter. Explicit actions
-  // are handled through buttons, forms, and the New SMS menu.
   if (type === "message_handler") return silent();
 
   return silent();
