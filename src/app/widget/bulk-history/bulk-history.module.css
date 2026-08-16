@@ -1,0 +1,424 @@
+.app {
+  display: grid;
+  grid-template-columns: 330px minmax(520px, 1fr) 270px;
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+  background: #f7f9fc;
+  color: #17202a;
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.sidebar,
+.detail,
+.context {
+  min-height: 0;
+  background: #fff;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e5e7eb;
+}
+
+.brandRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 18px 14px;
+}
+
+.brandRow h1,
+.detailHeader h2,
+.context h3,
+.cardHeader h3 {
+  margin: 0;
+}
+
+.brandRow h1 {
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.brandRow p,
+.detailHeader p,
+.context > p,
+.cardHeader p {
+  margin: 4px 0 0;
+  color: #718096;
+  font-size: 11px;
+}
+
+.brandRow button {
+  border: 1px solid #dbe2ea;
+  border-radius: 9px;
+  background: #fff;
+  color: #1769e0;
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.searchBox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 14px 12px;
+  border: 1px solid #dbe2ea;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 0 10px;
+}
+
+.searchBox span {
+  color: #94a3b8;
+}
+
+.searchBox input {
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  padding: 10px 0;
+  font-size: 12px;
+}
+
+.jobList {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.jobItem {
+  width: 100%;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  padding: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jobItem:hover {
+  background: #f6f9fd;
+}
+
+.selected {
+  background: #edf5ff;
+}
+
+.jobTopline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.jobTopline strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #1f2937;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.jobItem > p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 7px 0 8px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.jobMeta {
+  display: flex;
+  gap: 10px;
+  color: #94a3b8;
+  font-size: 9.5px;
+}
+
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 3px 7px;
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
+.good {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.warn {
+  background: #fff7ed;
+  color: #c2410c;
+}
+
+.bad {
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.neutral {
+  background: #eef2f7;
+  color: #64748b;
+}
+
+.detail {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  background: #f7f9fc;
+}
+
+.detailHeader {
+  display: flex;
+  min-height: 72px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e5e7eb;
+  padding: 0 24px;
+  background: #fff;
+}
+
+.detailHeader h2 {
+  font-size: 16px;
+}
+
+.scrollArea {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.metrics > div {
+  border: 1px solid #e3e8ef;
+  border-radius: 12px;
+  background: #fff;
+  padding: 14px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.metrics span,
+.contextDetails span {
+  display: block;
+  color: #94a3b8;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metrics strong {
+  display: block;
+  margin-top: 6px;
+  color: #1f2937;
+  font-size: 24px;
+}
+
+.card {
+  margin-top: 14px;
+  border: 1px solid #e3e8ef;
+  border-radius: 13px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #edf1f5;
+  padding: 15px 17px;
+}
+
+.cardHeader h3 {
+  font-size: 13px;
+}
+
+.cardHeader > strong {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.messageTemplate {
+  padding: 17px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  padding: 11px 14px;
+  border-bottom: 1px solid #edf1f5;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: #fafbfc;
+  color: #94a3b8;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+td {
+  color: #475569;
+  font-size: 11px;
+}
+
+.successState,
+.state {
+  padding: 22px;
+  color: #64748b;
+  font-size: 11px;
+  text-align: center;
+}
+
+.successState {
+  color: #15803d;
+}
+
+.empty {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  color: #64748b;
+  text-align: center;
+}
+
+.empty > div {
+  display: grid;
+  width: 56px;
+  height: 56px;
+  place-items: center;
+  margin-bottom: 10px;
+  border-radius: 16px;
+  background: #eef5ff;
+  color: #1769e0;
+  font-size: 24px;
+}
+
+.empty h2 {
+  margin: 0;
+  color: #334155;
+  font-size: 17px;
+}
+
+.empty p {
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+
+.error {
+  position: absolute;
+  z-index: 3;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 80%;
+  border: 1px solid #fecaca;
+  border-radius: 9px;
+  background: #fef2f2;
+  color: #b91c1c;
+  padding: 9px 12px;
+  font-size: 11px;
+  box-shadow: 0 6px 20px rgb(15 23 42 / 8%);
+}
+
+.context {
+  border-left: 1px solid #e5e7eb;
+  padding: 28px 22px;
+  overflow-y: auto;
+}
+
+.contextIcon {
+  display: grid;
+  width: 62px;
+  height: 62px;
+  place-items: center;
+  margin: 0 auto 12px;
+  border-radius: 18px;
+  background: #eef5ff;
+  color: #1769e0;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.context h3 {
+  text-align: center;
+  font-size: 16px;
+}
+
+.context > p {
+  margin-bottom: 22px;
+  text-align: center;
+}
+
+.contextDetails {
+  border-top: 1px solid #eef2f7;
+}
+
+.contextDetails div {
+  padding: 13px 0;
+  border-bottom: 1px solid #eef2f7;
+}
+
+.contextDetails strong {
+  display: block;
+  margin-top: 4px;
+  color: #334155;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1050px) {
+  .app {
+    grid-template-columns: 300px minmax(420px, 1fr);
+  }
+
+  .context {
+    display: none;
+  }
+}
