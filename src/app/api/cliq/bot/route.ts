@@ -111,7 +111,9 @@ function cliqUserId(payload: UnknownRecord): string | null {
 }
 
 async function sendComposePrompt(userId: string): Promise<void> {
-  await cliqFetch(`/bots/${encodeURIComponent(MCC_BOT_UNIQUE_NAME)}/messages`, {
+  const path = `/bots/${encodeURIComponent(MCC_BOT_UNIQUE_NAME)}/messages?user_ids=${encodeURIComponent(userId)}`;
+
+  await cliqFetch(path, {
     method: "POST",
     body: JSON.stringify({
       text: "Start a new MCC SMS conversation.",
@@ -125,7 +127,6 @@ async function sendComposePrompt(userId: string): Promise<void> {
           },
         },
       ],
-      user_ids: userId,
       sync_message: true,
       mark_as_read: true,
     }),
