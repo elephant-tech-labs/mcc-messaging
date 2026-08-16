@@ -295,6 +295,22 @@ export async function applyMessageStatus(input: {
   };
 }
 
+export async function getConversationMessages(
+  conversationId: string,
+  limit = 100,
+): Promise<MessagingMessage[]> {
+  const safeLimit = Math.max(1, Math.min(200, limit));
+  const { data, error } = await getSupabaseAdmin()
+    .from("messaging_messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(safeLimit);
+
+  throwIfError(error, "Load messaging conversation messages failed");
+  return ((data ?? []) as MessagingMessage[]).reverse();
+}
+
 export async function getContactThread(zohoContactId: string): Promise<{
   conversations: MessagingConversation[];
   messages: MessagingMessage[];
