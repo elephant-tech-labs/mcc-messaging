@@ -91,38 +91,25 @@ async function reply(payload: UnknownRecord, text: string): Promise<NextResponse
 }
 
 function newSmsForm(): UnknownRecord {
+  // Keep this intentionally minimal while validating Zoho Cliq's webhook bot-menu
+  // form rendering contract. Once this renders, the CRM dynamic selector is added
+  // back independently so we can isolate platform validation errors cleanly.
   return {
     type: "form",
     title: "New MCC SMS",
     name: "mcc_new_sms",
     version: 1,
-    hint: "Search a Zoho CRM Contact and send an SMS from the MCC Twilio number.",
-    button_label: "Send SMS",
-    trigger_on_cancel: true,
+    hint: "Start a new MCC SMS conversation.",
+    button_label: "Continue",
     action: {
       type: "invoke.function",
       name: NEW_SMS_FUNCTION_NAME,
     },
     inputs: [
       {
-        type: "dynamic_select",
-        name: "contact",
-        label: "CRM Contact",
-        hint: "Search by contact name. Only Contacts with a Phone value can be selected.",
-        placeholder: "Start typing a contact name",
-        mandatory: true,
-        options: [
-          {
-            label: "Start typing to search CRM",
-            value: "scope_required",
-          },
-        ],
-      },
-      {
         type: "textarea",
         name: "message",
         label: "SMS Message",
-        hint: "The message will be sent through the existing MCC Twilio number.",
         placeholder: "Type your message",
         mandatory: true,
         min_length: 1,
@@ -169,9 +156,9 @@ export async function POST(request: Request) {
     );
   }
 
-  // Zoho currently labels this webhook bot-menu invocation as action_handler.
-  // Bot menu handlers support forms as synchronous responses, so return the
-  // documented form object directly.
+  // Zoho currently identifies this Webhook Bot menu click as action_handler.
+  // Bot menu handlers must return their response synchronously; response_url is
+  // not supported for this handler type.
   if (type === "menu_handler" || type === "action_handler") {
     return NextResponse.json(newSmsForm());
   }
