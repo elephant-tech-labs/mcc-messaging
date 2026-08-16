@@ -69,15 +69,9 @@ security invoker
 set search_path = public
 as $$
 begin
-  update public.bulk_sms_recipients
-  set status = 'queued',
-      processing_started_at = null,
-      updated_at = now()
-  where job_id = p_job_id
-    and status = 'processing'
-    and twilio_message_sid is null
-    and processing_started_at < now() - interval '10 minutes';
-
+  -- Do not automatically recycle stale processing rows. Twilio may already have
+  -- accepted an SMS even if the worker died before persisting its SID, and
+  -- automatic recycling could therefore duplicate a real customer message.
   return query
   with claimed as (
     select id
