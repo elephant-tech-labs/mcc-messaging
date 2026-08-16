@@ -111,7 +111,6 @@ function newSmsForm(): UnknownRecord {
         hint: "Search by contact name. Only Contacts with a Phone value can be selected.",
         placeholder: "Start typing a contact name",
         mandatory: true,
-        trigger_on_change: true,
         options: [],
       },
       {
@@ -148,10 +147,12 @@ export async function POST(request: Request) {
 
   const type = handlerType(payload);
   const params = record(payload.params);
+  const handler = record(payload.handler);
   console.info("Zoho Cliq bot event received", {
     handlerType: type ?? "unknown",
     payloadKeys: Object.keys(payload).slice(0, 20),
     paramKeys: Object.keys(params).slice(0, 20),
+    handlerKeys: Object.keys(handler).slice(0, 20),
     hasResponseUrl: Boolean(responseUrl(payload)),
   });
 
@@ -162,9 +163,10 @@ export async function POST(request: Request) {
     );
   }
 
-  if (type === "menu_handler") {
-    // Bot menu responses are rendered synchronously by Cliq. Returning the form
-    // directly matches the platform's menu-handler form response contract.
+  // Zoho's webhook payload currently identifies a bot-menu invocation as
+  // action_handler even though the configured execution handler is menu_handler.
+  // MCC Messages currently has a single custom bot action: New SMS.
+  if (type === "menu_handler" || type === "action_handler") {
     return NextResponse.json(newSmsForm());
   }
 
