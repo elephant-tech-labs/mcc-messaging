@@ -151,7 +151,7 @@ export async function POST(request: Request) {
     payload.query,
   ) ?? "";
 
-  if (type === "form_dynamic_select_handler" || dynamicQuery) {
+  if (type === "form_dynamic_select_handler" || type === "form_values_handler" || dynamicQuery) {
     console.info("Cliq New SMS dynamic contact search", {
       handlerType: type ?? "unknown",
       targetKeys: Object.keys(target).slice(0, 12),
@@ -159,7 +159,9 @@ export async function POST(request: Request) {
       queryLength: dynamicQuery.length,
     });
 
-    if (dynamicQuery.length < 2) return NextResponse.json({ options: [] });
+    if (dynamicQuery.length < 2) {
+      return NextResponse.json({ output: { options: [] } });
+    }
 
     try {
       const contacts = await searchZohoContacts(dynamicQuery, 20);
@@ -167,17 +169,19 @@ export async function POST(request: Request) {
         resultCount: contacts.length,
       });
       return NextResponse.json({
-        options: contacts.map((contact) => ({
-          label: `${contact.Full_Name?.trim() || "Unnamed Contact"}${contact.Phone ? ` · ${contact.Phone}` : ""}`.slice(0, 100),
-          value: contact.id,
-        })),
+        output: {
+          options: contacts.map((contact) => ({
+            label: `${contact.Full_Name?.trim() || "Unnamed Contact"}${contact.Phone ? ` · ${contact.Phone}` : ""}`.slice(0, 100),
+            value: contact.id,
+          })),
+        },
       });
     } catch (error) {
       console.warn(
         "Cliq New SMS contact search unavailable",
         error instanceof Error ? error.message.slice(0, 220) : "Unknown CRM contact search error",
       );
-      return NextResponse.json({ options: [] });
+      return NextResponse.json({ output: { options: [] } });
     }
   }
 
