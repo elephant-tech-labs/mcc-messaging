@@ -15,6 +15,29 @@ function record(value: unknown): UnknownRecord {
     : {};
 }
 
+function mapFromUnknown(value: unknown): UnknownRecord {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as UnknownRecord;
+  }
+  if (typeof value === "string" && value.trim().startsWith("{")) {
+    try {
+      return record(JSON.parse(value));
+    } catch {
+      return {};
+    }
+  }
+  if (Array.isArray(value)) {
+    const mapped: UnknownRecord = {};
+    for (const entry of value) {
+      const item = record(entry);
+      const key = stringValue(item.name, item.key, item.param_name);
+      if (key) mapped[key] = item.value ?? item.text ?? item.input ?? item.query;
+    }
+    return mapped;
+  }
+  return {};
+}
+
 function safeEqual(left: string | null, right: string): boolean {
   if (!left) return false;
   const a = Buffer.from(left);
@@ -25,6 +48,7 @@ function safeEqual(left: string | null, right: string): boolean {
 function stringValue(...values: unknown[]): string | null {
   for (const value of values) {
     if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
   }
   return null;
 }
@@ -79,19 +103,19 @@ async function sendCliqResponse(payload: UnknownRecord, output: UnknownRecord): 
 
 function selectedValue(value: unknown): string | null {
   if (typeof value === "string") return value.trim() || null;
-  const item = record(value);
+  const item = mapFromUnknown(value);
   return stringValue(item.value, item.id);
 }
 
 function selectedLabel(value: unknown): string | null {
   if (typeof value === "string") return value.trim() || null;
-  const item = record(value);
+  const item = mapFromUnknown(value);
   return stringValue(item.label, item.name);
 }
 
 function userIdentity(payload: UnknownRecord): { id: string | null; name: string | null } {
   const params = record(payload.params);
-  const user = record(params.user ?? payload.user);
+  const user = mapFromUnknown(params.user ?? payload.user);
   const name = stringValue(
     user.full_name,
     user.name,
@@ -118,14 +142,30 @@ export async function POST(request: Request) {
 
   const params = record(payload.params);
   const type = handlerType(payload);
-  const target = record(params.target ?? payload.target);
+  const target = mapFromUnknown(params.target ?? payload.target);
+  const dynamicQuery = stringValue(
+    target.query,
+    target.search_query,
+    target.searchQuery,
+    params.query,
+    payload.query,
+  ) ?? "";
 
-  if (type === "form_dynamic_select_handler" || stringValue(target.query)) {
-    const query = stringValue(target.query) ?? "";
-    if (query.length < 2) return NextResponse.json({ options: [] });
+  if (type === "form_dynamic_select_handler" || dynamicQuery) {
+    console.info("Cliq New SMS dynamic contact search", {
+      handlerType: type ?? "unknown",
+      targetKeys: Object.keys(target).slice(0, 12),
+      targetName: stringValue(target.name) ?? "unknown",
+      queryLength: dynamicQuery.length,
+    });
+
+    if (dynamicQuery.length < 2) return NextResponse.json({ options: [] });
 
     try {
-      const contacts = await searchZohoContacts(query, 20);
+      const contacts = await searchZohoContacts(dynamicQuery, 20);
+      console.info("Cliq New SMS dynamic contact search completed", {
+        resultCount: contacts.length,
+      });
       return NextResponse.json({
         options: contacts.map((contact) => ({
           label: `${contact.Full_Name?.trim() || "Unnamed Contact"}${contact.Phone ? ` · ${contact.Phone}` : ""}`.slice(0, 100),
@@ -141,13 +181,13 @@ export async function POST(request: Request) {
     }
   }
 
-  const form = record(params.form ?? payload.form);
+  const form = mapFromUnknown(params.form ?? payload.form);
   const action = stringValue(form.action);
   if (action?.toLowerCase() === "cancel") {
     return sendCliqResponse(payload, { text: "New SMS cancelled." });
   }
 
-  const values = record(form.values);
+  const values = mapFromUnknown(form.values);
   const contactField = values.contact;
   const contactId = selectedValue(contactField);
   const contactLabel = selectedLabel(contactField);
