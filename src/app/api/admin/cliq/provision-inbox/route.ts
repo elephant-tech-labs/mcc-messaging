@@ -41,6 +41,13 @@ function executionUrl(): string {
   return `${base}/api/cliq/functions/inbox?secret=${secret}`;
 }
 
+function errorCode(error: unknown): string | null {
+  if (!(error instanceof CliqApiError)) return null;
+  if (!error.payload || typeof error.payload !== "object") return null;
+  const value = (error.payload as { code?: unknown }).code;
+  return typeof value === "string" ? value : null;
+}
+
 function alreadyExists(error: unknown): boolean {
   if (!(error instanceof CliqApiError)) return false;
   const payload =
@@ -52,25 +59,44 @@ function alreadyExists(error: unknown): boolean {
   return code.includes("already") || message.includes("already");
 }
 
+function menuHandlers(bot: Bot): Handler[] {
+  return (bot.handlers ?? []).filter((handler) => handler.type === "menu_handler");
+}
+
+function menuName(handler: Handler): string | null {
+  return handler.display_props?.name ?? handler.name ?? null;
+}
+
+function findInboxMenu(bot: Bot): Handler | undefined {
+  return menuHandlers(bot).find(
+    (handler) => menuName(handler)?.toLowerCase() === INBOX_MENU_NAME.toLowerCase(),
+  );
+}
+
+async function loadBot(): Promise<Bot> {
+  const botList = await cliqFetch<ListResponse<Bot>>("/bots");
+  const bot = (botList.data ?? []).find((item) => item.name === BOT_NAME);
+  if (!bot) throw new Error("MCC Messages bot was not found.");
+  return bot;
+}
+
 export async function POST(request: Request) {
   if (!hasValidServiceKey(request)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  let stage = "load_bot";
+  let observedMenuNames: string[] = [];
+
   try {
-    const botList = await cliqFetch<ListResponse<Bot>>("/bots");
-    const bot = (botList.data ?? []).find((item) => item.name === BOT_NAME);
-    if (!bot) throw new Error("MCC Messages bot was not found.");
+    let bot = await loadBot();
+    observedMenuNames = menuHandlers(bot).map(menuName).filter((value): value is string => Boolean(value));
 
-    const existingMenu = (bot.handlers ?? []).find(
-      (handler) =>
-        handler.type === "menu_handler" &&
-        (handler.display_props?.name ?? handler.name)?.toLowerCase() ===
-          INBOX_MENU_NAME.toLowerCase(),
-    );
-
+    let existingMenu = findInboxMenu(bot);
     let menuStatus: "existing" | "created" = existingMenu ? "existing" : "created";
+
     if (!existingMenu) {
+      stage = "create_inbox_menu";
       try {
         await cliqFetch(`/bots/${encodeURIComponent(bot.id)}/handlers`, {
           method: "POST",
@@ -81,11 +107,26 @@ export async function POST(request: Request) {
           }),
         });
       } catch (error) {
-        if (alreadyExists(error)) menuStatus = "existing";
-        else throw error;
+        if (alreadyExists(error)) {
+          menuStatus = "existing";
+        } else {
+          // Cliq occasionally returns a generic operation_failed even when handler
+          // metadata has already changed. Re-read the bot before deciding it failed.
+          bot = await loadBot();
+          observedMenuNames = menuHandlers(bot)
+            .map(menuName)
+            .filter((value): value is string => Boolean(value));
+          existingMenu = findInboxMenu(bot);
+          if (existingMenu) {
+            menuStatus = "existing";
+          } else {
+            throw error;
+          }
+        }
       }
     }
 
+    stage = "list_functions";
     const functionList = await cliqFetch<ListResponse<CliqFunction>>("/functions");
     const functions = functionList.data ?? [];
     const url = executionUrl();
@@ -93,6 +134,7 @@ export async function POST(request: Request) {
     let functionCreated = false;
 
     if (!inboxFunction) {
+      stage = "create_inbox_function";
       const created = await cliqFetch<FunctionResponse>("/functions", {
         method: "POST",
         body: JSON.stringify({
@@ -113,6 +155,7 @@ export async function POST(request: Request) {
         throw new Error(`${INBOX_FUNCTION_NAME} exists but is not a webhook function.`);
       }
       if (inboxFunction.execution_url !== url) {
+        stage = "update_inbox_function";
         const updated = await cliqFetch<FunctionResponse>(
           `/functions/${encodeURIComponent(inboxFunction.id)}`,
           {
@@ -130,6 +173,7 @@ export async function POST(request: Request) {
     let handlerStatus: "existing" | "created" = hasButtonHandler ? "existing" : "created";
 
     if (!hasButtonHandler) {
+      stage = "create_inbox_button_handler";
       try {
         await cliqFetch(`/functions/${encodeURIComponent(inboxFunction.id)}/handlers`, {
           method: "POST",
@@ -158,9 +202,19 @@ export async function POST(request: Request) {
       },
     });
   } catch (error) {
+    console.error("Cliq inbox provisioning failed", {
+      stage,
+      code: errorCode(error) ?? "unknown",
+      menuCount: observedMenuNames.length,
+      menuNames: observedMenuNames,
+    });
+
     return NextResponse.json(
       {
         ok: false,
+        stage,
+        menuCount: observedMenuNames.length,
+        menuNames: observedMenuNames,
         error:
           error instanceof Error
             ? error.message.slice(0, 500)
