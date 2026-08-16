@@ -87,6 +87,8 @@ type SendPayload = {
 
 const SDK_URL = "https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js";
 const PROXY_FUNCTION = "mcc_messaging_widget_proxy";
+const POLL_INTERVAL_MS = 4000;
+const STICK_TO_BOTTOM_THRESHOLD_PX = 96;
 
 function loadZohoSdk(): Promise<void> {
   if (window.ZOHO) return Promise.resolve();
@@ -194,6 +196,55 @@ function messageState(status: string): { label: string; failed: boolean } {
   return { label: "Sending", failed: false };
 }
 
+function contactsEqual(left: Contact | null, right: Contact): boolean {
+  return Boolean(
+    left &&
+      left.id === right.id &&
+      left.name === right.name &&
+      left.phone === right.phone,
+  );
+}
+
+function conversationsEqual(left: Conversation[], right: Conversation[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const next = right[index];
+    return Boolean(
+      next &&
+        item.id === next.id &&
+        item.status === next.status &&
+        item.unread_count === next.unread_count &&
+        item.opt_out_status === next.opt_out_status,
+    );
+  });
+}
+
+function messagesEqual(left: Message[], right: Message[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => {
+    const next = right[index];
+    return Boolean(
+      next &&
+        item.id === next.id &&
+        item.direction === next.direction &&
+        item.body === next.body &&
+        item.status === next.status &&
+        item.sent_by_name === next.sent_by_name &&
+        item.created_at === next.created_at,
+    );
+  });
+}
+
+function isNearBottom(element: HTMLDivElement | null): boolean {
+  if (!element) return true;
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= STICK_TO_BOTTOM_THRESHOLD_PX;
+}
+
+function scrollMessagePaneToBottom(element: HTMLDivElement | null): void {
+  if (!element) return;
+  element.scrollTop = element.scrollHeight;
+}
+
 async function executeProxy<T>(args: Record<string, unknown>): Promise<T> {
   const sdk = window.ZOHO;
   if (!sdk) throw new Error("Zoho CRM widget context is unavailable");
@@ -220,7 +271,11 @@ export default function ContactMessagingWidgetV2() {
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const loadingRef = useRef(false);
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const messagesPaneRef = useRef<HTMLDivElement | null>(null);
+  const contactDataRef = useRef<Contact | null>(null);
+  const conversationsDataRef = useRef<Conversation[]>([]);
+  const messagesDataRef = useRef<Message[]>([]);
+  const firstHistoryLoadRef = useRef(true);
 
   const activeConversation = useMemo(
     () => conversations.find((item) => item.status === "Active") ?? conversations[0] ?? null,
@@ -230,12 +285,17 @@ export default function ContactMessagingWidgetV2() {
     activeConversation && activeConversation.opt_out_status !== "Active",
   );
 
-  const fetchHistory = useCallback(async (showLoading: boolean) => {
+  const fetchHistory = useCallback(async (showLoading: boolean, forceScroll = false) => {
     if (!contactId || loadingRef.current) return;
     loadingRef.current = true;
     if (showLoading) setLoading(true);
 
     try {
+      const pane = messagesPaneRef.current;
+      const wasNearBottom = isNearBottom(pane);
+      const previousMessages = messagesDataRef.current;
+      const previousLastId = previousMessages[previousMessages.length - 1]?.id ?? null;
+
       const payload = await executeProxy<HistoryPayload>({
         action: "history",
         zohoContactId: contactId,
@@ -244,20 +304,45 @@ export default function ContactMessagingWidgetV2() {
         throw new Error(payload.detail || payload.error || "Unable to load conversation");
       }
 
-      setContact(payload.contact);
-      setConversations(payload.conversations ?? []);
-      setMessages(payload.messages ?? []);
+      const nextContact = payload.contact;
+      const nextConversations = payload.conversations ?? [];
+      const nextMessages = payload.messages ?? [];
+      const nextLastId = nextMessages[nextMessages.length - 1]?.id ?? null;
+      const hasNewMessage = nextMessages.length > previousMessages.length || nextLastId !== previousLastId;
+      const firstLoad = firstHistoryLoadRef.current;
+
+      if (!contactsEqual(contactDataRef.current, nextContact)) {
+        contactDataRef.current = nextContact;
+        setContact(nextContact);
+      }
+
+      if (!conversationsEqual(conversationsDataRef.current, nextConversations)) {
+        conversationsDataRef.current = nextConversations;
+        setConversations(nextConversations);
+      }
+
+      if (!messagesEqual(previousMessages, nextMessages)) {
+        messagesDataRef.current = nextMessages;
+        setMessages(nextMessages);
+      }
+
       setError(null);
-      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+      firstHistoryLoadRef.current = false;
+
+      // Never call scrollIntoView here. In a Zoho related-list iframe it can move
+      // the parent CRM record page. Only scroll the widget's own message pane.
+      if (forceScroll || firstLoad || (hasNewMessage && wasNearBottom)) {
+        requestAnimationFrame(() => scrollMessagePaneToBottom(messagesPaneRef.current));
+      }
     } catch (fetchError) {
-      if (showLoading || messages.length === 0) {
+      if (showLoading || messagesDataRef.current.length === 0) {
         setError(fetchError instanceof Error ? fetchError.message : "Unable to load conversation");
       }
     } finally {
       loadingRef.current = false;
       if (showLoading) setLoading(false);
     }
-  }, [contactId, messages.length]);
+  }, [contactId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -322,9 +407,29 @@ export default function ContactMessagingWidgetV2() {
 
   useEffect(() => {
     if (!ready || !contactId) return;
+
     void fetchHistory(true);
-    const timer = window.setInterval(() => void fetchHistory(false), 4000);
-    return () => window.clearInterval(timer);
+
+    const poll = () => {
+      // A hidden browser tab does not need a 4-second CRM/Supabase refresh.
+      if (document.visibilityState === "visible") {
+        void fetchHistory(false);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        void fetchHistory(false);
+      }
+    };
+
+    const timer = window.setInterval(poll, POLL_INTERVAL_MS);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
   }, [contactId, fetchHistory, ready]);
 
   const sendMessage = useCallback(async () => {
@@ -346,7 +451,7 @@ export default function ContactMessagingWidgetV2() {
         throw new Error(payload.detail || payload.error || "Message could not be sent");
       }
       setDraft("");
-      await fetchHistory(false);
+      await fetchHistory(false, true);
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Message could not be sent");
     } finally {
@@ -398,7 +503,7 @@ export default function ContactMessagingWidgetV2() {
           </div>
         ) : null}
 
-        <div className={styles.messages} aria-live="polite">
+        <div ref={messagesPaneRef} className={styles.messages} aria-live="polite">
           {loading ? (
             <div className={styles.loadingState}><span className={styles.spinner} />Loading conversation…</div>
           ) : null}
@@ -432,7 +537,6 @@ export default function ContactMessagingWidgetV2() {
               </article>
             );
           }) : null}
-          <div ref={bottomRef} />
         </div>
 
         <form className={styles.composer} onSubmit={handleSubmit}>
