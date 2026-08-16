@@ -77,6 +77,8 @@ type HistoryPayload = {
   contact?: Contact;
   conversations?: Conversation[];
   messages?: Message[];
+  has_more?: boolean;
+  next_before?: string | null;
 };
 
 type SendPayload = {
@@ -235,6 +237,15 @@ function messagesEqual(left: Message[], right: Message[]): boolean {
   });
 }
 
+function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
+  const byId = new Map(existing.map((item) => [item.id, item]));
+  for (const item of incoming) byId.set(item.id, item);
+  return [...byId.values()].sort((left, right) => {
+    const time = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+    return time !== 0 ? time : left.id.localeCompare(right.id);
+  });
+}
+
 function isNearBottom(element: HTMLDivElement | null): boolean {
   if (!element) return true;
   return element.scrollHeight - element.scrollTop - element.clientHeight <= STICK_TO_BOTTOM_THRESHOLD_PX;
@@ -267,6 +278,8 @@ export default function ContactMessagingWidgetV2() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
@@ -275,6 +288,7 @@ export default function ContactMessagingWidgetV2() {
   const contactDataRef = useRef<Contact | null>(null);
   const conversationsDataRef = useRef<Conversation[]>([]);
   const messagesDataRef = useRef<Message[]>([]);
+  const nextBeforeRef = useRef<string | null>(null);
   const firstHistoryLoadRef = useRef(true);
 
   const activeConversation = useMemo(
@@ -285,7 +299,11 @@ export default function ContactMessagingWidgetV2() {
     activeConversation && activeConversation.opt_out_status !== "Active",
   );
 
-  const fetchHistory = useCallback(async (showLoading: boolean, forceScroll = false) => {
+  const fetchHistory = useCallback(async (
+    showLoading: boolean,
+    forceScroll = false,
+    kind: "initial" | "poll" = "poll",
+  ) => {
     if (!contactId || loadingRef.current) return;
     loadingRef.current = true;
     if (showLoading) setLoading(true);
@@ -294,43 +312,47 @@ export default function ContactMessagingWidgetV2() {
       const pane = messagesPaneRef.current;
       const wasNearBottom = isNearBottom(pane);
       const previousMessages = messagesDataRef.current;
-      const previousLastId = previousMessages[previousMessages.length - 1]?.id ?? null;
+      const previousIds = new Set(previousMessages.map((item) => item.id));
 
       const payload = await executeProxy<HistoryPayload>({
-        action: "history",
+        action: kind === "initial" ? "history" : "historyPoll",
         zohoContactId: contactId,
       });
-      if (!payload.ok || !payload.contact) {
+      if (!payload.ok || (kind === "initial" && !payload.contact)) {
         throw new Error(payload.detail || payload.error || "Unable to load conversation");
       }
 
-      const nextContact = payload.contact;
-      const nextConversations = payload.conversations ?? [];
-      const nextMessages = payload.messages ?? [];
-      const nextLastId = nextMessages[nextMessages.length - 1]?.id ?? null;
-      const hasNewMessage = nextMessages.length > previousMessages.length || nextLastId !== previousLastId;
-      const firstLoad = firstHistoryLoadRef.current;
-
-      if (!contactsEqual(contactDataRef.current, nextContact)) {
-        contactDataRef.current = nextContact;
-        setContact(nextContact);
+      if (payload.contact && !contactsEqual(contactDataRef.current, payload.contact)) {
+        contactDataRef.current = payload.contact;
+        setContact(payload.contact);
       }
 
+      const nextConversations = payload.conversations ?? [];
       if (!conversationsEqual(conversationsDataRef.current, nextConversations)) {
         conversationsDataRef.current = nextConversations;
         setConversations(nextConversations);
       }
+
+      const incomingMessages = payload.messages ?? [];
+      const hasNewMessage = incomingMessages.some((item) => !previousIds.has(item.id));
+      const nextMessages = kind === "initial"
+        ? incomingMessages
+        : mergeMessages(previousMessages, incomingMessages);
 
       if (!messagesEqual(previousMessages, nextMessages)) {
         messagesDataRef.current = nextMessages;
         setMessages(nextMessages);
       }
 
+      if (kind === "initial") {
+        setHasMore(Boolean(payload.has_more));
+        nextBeforeRef.current = payload.next_before ?? null;
+      }
+
       setError(null);
+      const firstLoad = firstHistoryLoadRef.current;
       firstHistoryLoadRef.current = false;
 
-      // Never call scrollIntoView here. In a Zoho related-list iframe it can move
-      // the parent CRM record page. Only scroll the widget's own message pane.
       if (forceScroll || firstLoad || (hasNewMessage && wasNearBottom)) {
         requestAnimationFrame(() => scrollMessagePaneToBottom(messagesPaneRef.current));
       }
@@ -343,6 +365,42 @@ export default function ContactMessagingWidgetV2() {
       if (showLoading) setLoading(false);
     }
   }, [contactId]);
+
+  const loadEarlier = useCallback(async () => {
+    if (!contactId || loadingOlder || !hasMore || !nextBeforeRef.current) return;
+    const pane = messagesPaneRef.current;
+    const oldHeight = pane?.scrollHeight ?? 0;
+    const oldTop = pane?.scrollTop ?? 0;
+
+    setLoadingOlder(true);
+    try {
+      const payload = await executeProxy<HistoryPayload>({
+        action: "historyOlder",
+        zohoContactId: contactId,
+        before: nextBeforeRef.current,
+      });
+      if (!payload.ok) {
+        throw new Error(payload.detail || payload.error || "Unable to load earlier messages");
+      }
+
+      const nextMessages = mergeMessages(messagesDataRef.current, payload.messages ?? []);
+      messagesDataRef.current = nextMessages;
+      setMessages(nextMessages);
+      setHasMore(Boolean(payload.has_more));
+      nextBeforeRef.current = payload.next_before ?? null;
+      setError(null);
+
+      requestAnimationFrame(() => {
+        const currentPane = messagesPaneRef.current;
+        if (!currentPane) return;
+        currentPane.scrollTop = oldTop + (currentPane.scrollHeight - oldHeight);
+      });
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "Unable to load earlier messages");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [contactId, hasMore, loadingOlder]);
 
   useEffect(() => {
     let cancelled = false;
@@ -372,7 +430,6 @@ export default function ContactMessagingWidgetV2() {
           setReady(true);
         });
 
-        // Zoho context must be initialized before any CRM.CONFIG/FUNCTIONS API is used.
         await Promise.resolve(sdk.embeddedApp.init());
         if (cancelled) return;
 
@@ -408,18 +465,22 @@ export default function ContactMessagingWidgetV2() {
   useEffect(() => {
     if (!ready || !contactId) return;
 
-    void fetchHistory(true);
+    firstHistoryLoadRef.current = true;
+    messagesDataRef.current = [];
+    nextBeforeRef.current = null;
+    setMessages([]);
+    setHasMore(false);
+    void fetchHistory(true, false, "initial");
 
     const poll = () => {
-      // A hidden browser tab does not need a 4-second CRM/Supabase refresh.
       if (document.visibilityState === "visible") {
-        void fetchHistory(false);
+        void fetchHistory(false, false, "poll");
       }
     };
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
-        void fetchHistory(false);
+        void fetchHistory(false, false, "poll");
       }
     };
 
@@ -451,7 +512,7 @@ export default function ContactMessagingWidgetV2() {
         throw new Error(payload.detail || payload.error || "Message could not be sent");
       }
       setDraft("");
-      await fetchHistory(false, true);
+      await fetchHistory(false, true, "poll");
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Message could not be sent");
     } finally {
@@ -499,13 +560,21 @@ export default function ContactMessagingWidgetV2() {
         {error ? (
           <div className={styles.errorBanner} role="alert">
             <span>{error}</span>
-            {contactId ? <button type="button" onClick={() => void fetchHistory(true)}>Retry</button> : null}
+            {contactId ? <button type="button" onClick={() => void fetchHistory(true, false, "initial")}>Retry</button> : null}
           </div>
         ) : null}
 
         <div ref={messagesPaneRef} className={styles.messages} aria-live="polite">
           {loading ? (
             <div className={styles.loadingState}><span className={styles.spinner} />Loading conversation…</div>
+          ) : null}
+
+          {!loading && messages.length > 0 && hasMore ? (
+            <div className={styles.loadEarlierWrap}>
+              <button type="button" onClick={() => void loadEarlier()} disabled={loadingOlder}>
+                {loadingOlder ? "Loading…" : "Load earlier messages"}
+              </button>
+            </div>
           ) : null}
 
           {empty ? (
