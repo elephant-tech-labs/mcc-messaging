@@ -12,6 +12,7 @@ type CliqHandler = {
   type?: string;
   id?: string;
   display_props?: { name?: string; position?: number };
+  name?: string;
 };
 
 type CliqBot = {
@@ -29,7 +30,7 @@ type CliqFunction = {
   function_type?: string;
   execution_type?: string;
   execution_url?: string;
-  handlers?: Array<{ type?: string; id?: string }>;
+  handlers?: CliqHandler[];
 };
 
 type ListBotsResponse = { data?: CliqBot[] };
@@ -76,16 +77,21 @@ function legacyName(bot: CliqBot, allBots: CliqBot[]): string {
   throw new Error("Unable to choose a safe temporary name for the existing empty MCC bot.");
 }
 
-function isMissingHandlerError(error: unknown): boolean {
+function hasHandler(handlers: CliqHandler[] | undefined, type: string): boolean {
+  return (handlers ?? []).some((handler) => handler.type === type);
+}
+
+function isHandlerAlreadyExistsError(error: unknown): boolean {
   if (!(error instanceof CliqApiError)) return false;
-  if (error.status === 404) return true;
-
-  if (error.status === 400 && error.payload && typeof error.payload === "object") {
-    const payload = error.payload as { code?: unknown };
-    return payload.code === "execution_handler_not_found";
-  }
-
-  return false;
+  if (!error.payload || typeof error.payload !== "object") return false;
+  const payload = error.payload as { code?: unknown; message?: unknown };
+  const code = typeof payload.code === "string" ? payload.code.toLowerCase() : "";
+  const message = typeof payload.message === "string" ? payload.message.toLowerCase() : "";
+  return (
+    code.includes("already") ||
+    message.includes("already exists") ||
+    message.includes("already configured")
+  );
 }
 
 async function ensureLegacyShellHasHandler(bot: CliqBot): Promise<void> {
@@ -159,52 +165,62 @@ async function getOrCreateBot(): Promise<ProvisionResult> {
 }
 
 async function ensureBotHandler(
-  botId: string,
+  bot: CliqBot,
   type: "welcome_handler" | "message_handler",
   permissions: string[],
 ): Promise<"created" | "existing"> {
-  try {
-    await cliqFetch(`/bots/${encodeURIComponent(botId)}/handlers/${type}`);
-    return "existing";
-  } catch (error) {
-    if (!isMissingHandlerError(error)) throw error;
-  }
+  if (hasHandler(bot.handlers, type)) return "existing";
 
-  await cliqFetch(`/bots/${encodeURIComponent(botId)}/handlers`, {
-    method: "POST",
-    body: JSON.stringify({ type, permissions }),
-  });
-  return "created";
+  try {
+    await cliqFetch(`/bots/${encodeURIComponent(bot.id)}/handlers`, {
+      method: "POST",
+      body: JSON.stringify({ type, permissions }),
+    });
+    bot.handlers = [...(bot.handlers ?? []), { type }];
+    return "created";
+  } catch (error) {
+    if (isHandlerAlreadyExistsError(error)) return "existing";
+    throw error;
+  }
 }
 
-async function ensureNewSmsMenu(botId: string): Promise<"created" | "existing"> {
-  const detail = await cliqFetch<BotResponse>(`/bots/${encodeURIComponent(botId)}`);
-  const existing = (detail.data.handlers ?? []).find(
+async function ensureNewSmsMenu(bot: CliqBot): Promise<"created" | "existing"> {
+  const existing = (bot.handlers ?? []).find(
     (handler) =>
       handler.type === "menu_handler" &&
-      handler.display_props?.name?.toLowerCase() === NEW_SMS_MENU_NAME.toLowerCase(),
+      (handler.display_props?.name ?? handler.name)?.toLowerCase() ===
+        NEW_SMS_MENU_NAME.toLowerCase(),
   );
   if (existing) return "existing";
 
-  await cliqFetch(`/bots/${encodeURIComponent(botId)}/handlers`, {
-    method: "POST",
-    body: JSON.stringify({
-      type: "menu_handler",
-      name: NEW_SMS_MENU_NAME,
-      permissions: ["chat"],
-    }),
-  });
-  return "created";
+  try {
+    await cliqFetch(`/bots/${encodeURIComponent(bot.id)}/handlers`, {
+      method: "POST",
+      body: JSON.stringify({
+        type: "menu_handler",
+        name: NEW_SMS_MENU_NAME,
+        permissions: ["chat"],
+      }),
+    });
+    bot.handlers = [
+      ...(bot.handlers ?? []),
+      { type: "menu_handler", display_props: { name: NEW_SMS_MENU_NAME } },
+    ];
+    return "created";
+  } catch (error) {
+    if (isHandlerAlreadyExistsError(error)) return "existing";
+    throw error;
+  }
 }
 
 async function getOrCreateFunction(input: {
+  functions: CliqFunction[];
   name: string;
   description: string;
   functionType: "button" | "form";
   executionUrl: string;
 }): Promise<{ fn: CliqFunction; created: boolean }> {
-  const list = await cliqFetch<ListFunctionsResponse>("/functions");
-  const existing = (list.data ?? []).find((item) => item.name === input.name);
+  const existing = input.functions.find((item) => item.name === input.name);
 
   if (existing) {
     if (existing.function_type && existing.function_type !== input.functionType) {
@@ -224,6 +240,8 @@ async function getOrCreateFunction(input: {
           body: JSON.stringify({ execution_url: input.executionUrl }),
         },
       );
+      const index = input.functions.findIndex((item) => item.id === existing.id);
+      if (index >= 0) input.functions[index] = updated.data;
       return { fn: updated.data, created: false };
     }
 
@@ -241,77 +259,89 @@ async function getOrCreateFunction(input: {
     }),
   });
 
+  input.functions.push(created.data);
   return { fn: created.data, created: true };
 }
 
 async function ensureFunctionHandler(
-  functionId: string,
+  fn: CliqFunction,
   type:
     | "button_handler"
     | "form_submit_handler"
     | "form_dynamic_select_handler",
   permissions: string[],
 ): Promise<"created" | "existing"> {
-  try {
-    await cliqFetch(`/functions/${encodeURIComponent(functionId)}/handlers/${type}`);
-    return "existing";
-  } catch (error) {
-    if (!isMissingHandlerError(error)) throw error;
-  }
+  if (hasHandler(fn.handlers, type)) return "existing";
 
-  await cliqFetch(`/functions/${encodeURIComponent(functionId)}/handlers`, {
-    method: "POST",
-    body: JSON.stringify({ type, permissions }),
-  });
-  return "created";
+  try {
+    await cliqFetch(`/functions/${encodeURIComponent(fn.id)}/handlers`, {
+      method: "POST",
+      body: JSON.stringify({ type, permissions }),
+    });
+    fn.handlers = [...(fn.handlers ?? []), { type }];
+    return "created";
+  } catch (error) {
+    if (isHandlerAlreadyExistsError(error)) return "existing";
+    throw error;
+  }
 }
 
 export async function provisionMccCliqBot() {
   const { bot, created, renamedLegacyBot } = await getOrCreateBot();
-  const welcomeHandler = await ensureBotHandler(bot.id, "welcome_handler", ["user"]);
-  const messageHandler = await ensureBotHandler(bot.id, "message_handler", ["chat", "message", "user"]);
-  const newSmsMenu = await ensureNewSmsMenu(bot.id);
+
+  // Zoho's handler-detail endpoints are rate-limited to 10 requests/minute/user.
+  // Use handler metadata already returned by list calls and only POST truly missing
+  // handlers. This keeps provisioning comfortably below that threshold.
+  const welcomeHandler = await ensureBotHandler(bot, "welcome_handler", ["user"]);
+  const messageHandler = await ensureBotHandler(bot, "message_handler", ["chat", "message", "user"]);
+  const newSmsMenu = await ensureNewSmsMenu(bot);
+
+  const functionList = await cliqFetch<ListFunctionsResponse>("/functions");
+  const functions = functionList.data ?? [];
 
   const { fn: replyFunction, created: replyFunctionCreated } =
     await getOrCreateFunction({
+      functions,
       name: REPLY_FUNCTION_NAME,
       description: "Safely reply to an MCC SMS conversation from Zoho Cliq.",
       functionType: "button",
       executionUrl: replyFunctionExecutionUrl(),
     });
   const replyFunctionHandler = await ensureFunctionHandler(
-    replyFunction.id,
+    replyFunction,
     "button_handler",
     ["chat", "message", "user"],
   );
 
   const { fn: viewFunction, created: viewFunctionCreated } =
     await getOrCreateFunction({
+      functions,
       name: VIEW_FUNCTION_NAME,
       description: "View recent messages in an MCC SMS conversation from Zoho Cliq.",
       functionType: "button",
       executionUrl: viewFunctionExecutionUrl(),
     });
   const viewFunctionHandler = await ensureFunctionHandler(
-    viewFunction.id,
+    viewFunction,
     "button_handler",
     ["chat", "message", "user"],
   );
 
   const { fn: newSmsFunction, created: newSmsFunctionCreated } =
     await getOrCreateFunction({
+      functions,
       name: NEW_SMS_FUNCTION_NAME,
       description: "Search a Zoho CRM Contact and start a new MCC SMS from Zoho Cliq.",
       functionType: "form",
       executionUrl: newSmsFunctionExecutionUrl(),
     });
   const newSmsSubmitHandler = await ensureFunctionHandler(
-    newSmsFunction.id,
+    newSmsFunction,
     "form_submit_handler",
     ["chat", "user"],
   );
   const newSmsSearchHandler = await ensureFunctionHandler(
-    newSmsFunction.id,
+    newSmsFunction,
     "form_dynamic_select_handler",
     ["chat", "user"],
   );
