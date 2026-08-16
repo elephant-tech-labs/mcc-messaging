@@ -152,22 +152,12 @@ export async function POST(request: Request) {
   ) ?? "";
 
   if (type === "form_dynamic_select_handler" || type === "form_values_handler" || dynamicQuery) {
-    console.info("Cliq New SMS dynamic contact search", {
-      handlerType: type ?? "unknown",
-      targetKeys: Object.keys(target).slice(0, 12),
-      targetName: stringValue(target.name) ?? "unknown",
-      queryLength: dynamicQuery.length,
-    });
-
     if (dynamicQuery.length < 2) {
       return NextResponse.json({ output: { options: [] } });
     }
 
     try {
       const contacts = await searchZohoContacts(dynamicQuery, 20);
-      console.info("Cliq New SMS dynamic contact search completed", {
-        resultCount: contacts.length,
-      });
       return NextResponse.json({
         output: {
           options: contacts.map((contact) => ({
