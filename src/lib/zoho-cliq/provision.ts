@@ -4,6 +4,7 @@ import { CliqApiError, cliqFetch } from "@/lib/zoho-cliq/client";
 const BOT_NAME = "MCC Messages";
 const LEGACY_PREFIX = "MCC Empty";
 const REPLY_FUNCTION_NAME = "mccsmsreply";
+const VIEW_FUNCTION_NAME = "mccsmsview";
 
 type CliqBot = {
   id: string;
@@ -46,6 +47,10 @@ function botExecutionUrl(): string {
 
 function replyFunctionExecutionUrl(): string {
   return baseExecutionUrl("/api/cliq/functions/reply");
+}
+
+function viewFunctionExecutionUrl(): string {
+  return baseExecutionUrl("/api/cliq/functions/view");
 }
 
 function legacyName(bot: CliqBot, allBots: CliqBot[]): string {
@@ -160,28 +165,28 @@ async function ensureBotHandler(
   return "created";
 }
 
-async function getOrCreateReplyFunction(): Promise<{
-  fn: CliqFunction;
-  created: boolean;
-}> {
+async function getOrCreateButtonFunction(input: {
+  name: string;
+  description: string;
+  executionUrl: string;
+}): Promise<{ fn: CliqFunction; created: boolean }> {
   const list = await cliqFetch<ListFunctionsResponse>("/functions");
-  const existing = (list.data ?? []).find((item) => item.name === REPLY_FUNCTION_NAME);
-  const executionUrl = replyFunctionExecutionUrl();
+  const existing = (list.data ?? []).find((item) => item.name === input.name);
 
   if (existing) {
     if (existing.function_type && existing.function_type !== "button") {
-      throw new Error(`Cliq function ${REPLY_FUNCTION_NAME} exists but is not a button function.`);
+      throw new Error(`Cliq function ${input.name} exists but is not a button function.`);
     }
     if (existing.execution_type && existing.execution_type !== "webhook") {
-      throw new Error(`Cliq function ${REPLY_FUNCTION_NAME} exists but is not a webhook function.`);
+      throw new Error(`Cliq function ${input.name} exists but is not a webhook function.`);
     }
 
-    if (existing.execution_url !== executionUrl) {
+    if (existing.execution_url !== input.executionUrl) {
       const updated = await cliqFetch<FunctionResponse>(
         `/functions/${encodeURIComponent(existing.id)}`,
         {
           method: "PATCH",
-          body: JSON.stringify({ execution_url: executionUrl }),
+          body: JSON.stringify({ execution_url: input.executionUrl }),
         },
       );
       return { fn: updated.data, created: false };
@@ -193,11 +198,11 @@ async function getOrCreateReplyFunction(): Promise<{
   const created = await cliqFetch<FunctionResponse>("/functions", {
     method: "POST",
     body: JSON.stringify({
-      name: REPLY_FUNCTION_NAME,
-      description: "Safely reply to an MCC SMS conversation from Zoho Cliq.",
+      name: input.name,
+      description: input.description,
       function_type: "button",
       execution_type: "webhook",
-      execution_url: executionUrl,
+      execution_url: input.executionUrl,
     }),
   });
 
@@ -232,8 +237,20 @@ export async function provisionMccCliqBot() {
   const messageHandler = await ensureBotHandler(bot.id, "message_handler", ["chat", "message", "user"]);
 
   const { fn: replyFunction, created: replyFunctionCreated } =
-    await getOrCreateReplyFunction();
+    await getOrCreateButtonFunction({
+      name: REPLY_FUNCTION_NAME,
+      description: "Safely reply to an MCC SMS conversation from Zoho Cliq.",
+      executionUrl: replyFunctionExecutionUrl(),
+    });
   const replyFunctionHandler = await ensureFunctionButtonHandler(replyFunction.id);
+
+  const { fn: viewFunction, created: viewFunctionCreated } =
+    await getOrCreateButtonFunction({
+      name: VIEW_FUNCTION_NAME,
+      description: "View recent messages in an MCC SMS conversation from Zoho Cliq.",
+      executionUrl: viewFunctionExecutionUrl(),
+    });
+  const viewFunctionHandler = await ensureFunctionButtonHandler(viewFunction.id);
 
   return {
     bot: {
@@ -254,6 +271,13 @@ export async function provisionMccCliqBot() {
       executionType: replyFunction.execution_type ?? "webhook",
       created: replyFunctionCreated,
       handler: replyFunctionHandler,
+    },
+    viewFunction: {
+      id: viewFunction.id,
+      name: viewFunction.name,
+      executionType: viewFunction.execution_type ?? "webhook",
+      created: viewFunctionCreated,
+      handler: viewFunctionHandler,
     },
   };
 }
