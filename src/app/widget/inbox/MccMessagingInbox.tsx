@@ -83,6 +83,7 @@ type InboxPayload = {
   error?: string;
   detail?: string;
   unread_count?: number;
+  include_contacts?: boolean;
   conversations?: InboxConversation[];
 };
 
@@ -93,6 +94,8 @@ type ConversationPayload = {
   conversation?: Conversation;
   contact?: ContactView | null;
   messages?: Message[];
+  has_more?: boolean;
+  next_before?: string | null;
 };
 
 type ContactSearchPayload = {
@@ -232,6 +235,32 @@ function statusLabel(status: string): string {
   return status;
 }
 
+function mergeMessages(existing: Message[], incoming: Message[]): Message[] {
+  const byId = new Map(existing.map((item) => [item.id, item]));
+  for (const item of incoming) byId.set(item.id, item);
+  return [...byId.values()].sort((left, right) => {
+    const time = new Date(left.created_at).getTime() - new Date(right.created_at).getTime();
+    return time !== 0 ? time : left.id.localeCompare(right.id);
+  });
+}
+
+function messageSignature(items: Message[]): string {
+  return items.map((item) => `${item.id}:${item.status}:${item.error_code ?? ""}:${item.error_message ?? ""}`).join("|");
+}
+
+function inboxSignature(items: InboxConversation[]): string {
+  return items.map((item) => [
+    item.id,
+    item.last_message_at ?? "",
+    item.last_message ?? "",
+    item.last_message_status ?? "",
+    item.unread_count,
+    item.opt_out_status,
+    item.contact?.name ?? "",
+    item.contact?.phone ?? "",
+  ].join(":" )).join("|");
+}
+
 export default function MccMessagingInbox() {
   const [ready, setReady] = useState(false);
   const [currentUser, setCurrentUser] = useState<ZohoUser | null>(null);
@@ -242,6 +271,8 @@ export default function MccMessagingInbox() {
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [contact, setContact] = useState<ContactView | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasMoreMessages, setHasMoreMessages] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [listSearch, setListSearch] = useState("");
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
@@ -254,7 +285,11 @@ export default function MccMessagingInbox() {
   const [searchingContacts, setSearchingContacts] = useState(false);
   const [composeContact, setComposeContact] = useState<ContactView | null>(null);
   const messagePaneRef = useRef<HTMLDivElement | null>(null);
+  const inboxDataRef = useRef<InboxConversation[]>([]);
+  const inboxSignatureRef = useRef("");
+  const messagesDataRef = useRef<Message[]>([]);
   const previousMessageSignature = useRef("");
+  const nextBeforeRef = useRef<string | null>(null);
   const initialContactHandled = useRef(false);
 
   const filteredInbox = useMemo(() => {
@@ -283,13 +318,55 @@ export default function MccMessagingInbox() {
     pane.scrollTop = pane.scrollHeight;
   }, []);
 
-  const refreshInbox = useCallback(async (nextMode: "recent" | "unread", showLoading = false) => {
+  const refreshInbox = useCallback(async (
+    nextMode: "recent" | "unread",
+    showLoading = false,
+    hydrateContacts = showLoading,
+  ) => {
     if (!ready) return;
     if (showLoading) setLoading(true);
     try {
-      const payload = await executeProxy<InboxPayload>({ action: "inbox", mode: nextMode });
+      let payload = await executeProxy<InboxPayload>({
+        action: "inbox",
+        mode: nextMode,
+        includeContacts: hydrateContacts,
+      });
       if (!payload.ok) throw new Error(payload.detail || payload.error || "Unable to load MCC Messages");
-      setInbox(payload.conversations ?? []);
+
+      let nextInbox = payload.conversations ?? [];
+      if (!hydrateContacts) {
+        const previousByContact = new Map(
+          inboxDataRef.current
+            .filter((item) => item.zoho_contact_id && item.contact)
+            .map((item) => [item.zoho_contact_id as string, item.contact as ContactView]),
+        );
+
+        const hasUnknownContact = nextInbox.some(
+          (item) => item.zoho_contact_id && !previousByContact.has(item.zoho_contact_id),
+        );
+
+        if (hasUnknownContact) {
+          payload = await executeProxy<InboxPayload>({
+            action: "inbox",
+            mode: nextMode,
+            includeContacts: true,
+          });
+          if (!payload.ok) throw new Error(payload.detail || payload.error || "Unable to refresh MCC Messages");
+          nextInbox = payload.conversations ?? [];
+        } else {
+          nextInbox = nextInbox.map((item) => ({
+            ...item,
+            contact: item.zoho_contact_id ? previousByContact.get(item.zoho_contact_id) ?? null : null,
+          }));
+        }
+      }
+
+      const signature = inboxSignature(nextInbox);
+      if (signature !== inboxSignatureRef.current) {
+        inboxSignatureRef.current = signature;
+        inboxDataRef.current = nextInbox;
+        setInbox(nextInbox);
+      }
       setUnreadCount(payload.unread_count ?? 0);
       setError(null);
     } catch (err) {
@@ -299,38 +376,96 @@ export default function MccMessagingInbox() {
     }
   }, [ready]);
 
-  const openConversation = useCallback(async (conversationId: string, showLoading = true) => {
+  const openConversation = useCallback(async (conversationId: string, initial = true) => {
     if (!ready) return;
     const pane = messagePaneRef.current;
     const wasNearBottom = !pane || pane.scrollHeight - pane.scrollTop - pane.clientHeight < 80;
-    if (showLoading) setThreadLoading(true);
+    if (initial) {
+      setThreadLoading(true);
+      messagesDataRef.current = [];
+      previousMessageSignature.current = "";
+      nextBeforeRef.current = null;
+      setMessages([]);
+      setHasMoreMessages(false);
+    }
+
     try {
       const payload = await executeProxy<ConversationPayload>({
-        action: "conversation",
+        action: initial ? "conversation" : "conversationPoll",
         conversationId,
       });
       if (!payload.ok || !payload.conversation) {
         throw new Error(payload.detail || payload.error || "Unable to load conversation");
       }
-      const nextMessages = payload.messages ?? [];
-      const signature = nextMessages.map((item) => `${item.id}:${item.status}`).join("|");
+
+      const incoming = payload.messages ?? [];
+      const previousIds = new Set(messagesDataRef.current.map((item) => item.id));
+      const hasNewMessage = incoming.some((item) => !previousIds.has(item.id));
+      const nextMessages = initial ? incoming : mergeMessages(messagesDataRef.current, incoming);
+      const signature = messageSignature(nextMessages);
       const changed = signature !== previousMessageSignature.current;
       previousMessageSignature.current = signature;
+
       setSelectedId(conversationId);
       setConversation(payload.conversation);
-      setContact(payload.contact ?? null);
-      setComposeContact(null);
-      if (changed) setMessages(nextMessages);
+      if (initial) {
+        setContact(payload.contact ?? null);
+        setComposeContact(null);
+        setHasMoreMessages(Boolean(payload.has_more));
+        nextBeforeRef.current = payload.next_before ?? null;
+      }
+      if (changed) {
+        messagesDataRef.current = nextMessages;
+        setMessages(nextMessages);
+      }
       setError(null);
-      if (showLoading || (changed && wasNearBottom)) {
+
+      if (initial || (changed && hasNewMessage && wasNearBottom)) {
         requestAnimationFrame(scrollThreadToBottom);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load conversation");
     } finally {
-      if (showLoading) setThreadLoading(false);
+      if (initial) setThreadLoading(false);
     }
   }, [ready, scrollThreadToBottom]);
+
+  const loadEarlierMessages = useCallback(async () => {
+    if (!selectedId || loadingOlder || !hasMoreMessages || !nextBeforeRef.current) return;
+    const pane = messagePaneRef.current;
+    const oldHeight = pane?.scrollHeight ?? 0;
+    const oldTop = pane?.scrollTop ?? 0;
+    setLoadingOlder(true);
+
+    try {
+      const payload = await executeProxy<ConversationPayload>({
+        action: "conversationOlder",
+        conversationId: selectedId,
+        before: nextBeforeRef.current,
+      });
+      if (!payload.ok) {
+        throw new Error(payload.detail || payload.error || "Unable to load earlier messages");
+      }
+
+      const nextMessages = mergeMessages(messagesDataRef.current, payload.messages ?? []);
+      messagesDataRef.current = nextMessages;
+      previousMessageSignature.current = messageSignature(nextMessages);
+      setMessages(nextMessages);
+      setHasMoreMessages(Boolean(payload.has_more));
+      nextBeforeRef.current = payload.next_before ?? null;
+      setError(null);
+
+      requestAnimationFrame(() => {
+        const currentPane = messagePaneRef.current;
+        if (!currentPane) return;
+        currentPane.scrollTop = oldTop + (currentPane.scrollHeight - oldHeight);
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load earlier messages");
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [hasMoreMessages, loadingOlder, selectedId]);
 
   const openContactContext = useCallback(async (contactId: string) => {
     try {
@@ -346,7 +481,11 @@ export default function MccMessagingInbox() {
       } else {
         setSelectedId(null);
         setConversation(null);
+        messagesDataRef.current = [];
+        previousMessageSignature.current = "";
+        nextBeforeRef.current = null;
         setMessages([]);
+        setHasMoreMessages(false);
         setContact(null);
         setComposeContact(payload.contact);
         setDraft("");
@@ -386,7 +525,9 @@ export default function MccMessagingInbox() {
 
   useEffect(() => {
     if (!ready) return;
-    void refreshInbox(mode, true);
+    inboxDataRef.current = [];
+    inboxSignatureRef.current = "";
+    void refreshInbox(mode, true, true);
   }, [mode, ready, refreshInbox]);
 
   useEffect(() => {
@@ -404,7 +545,7 @@ export default function MccMessagingInbox() {
   useEffect(() => {
     if (!ready) return;
     const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refreshInbox(mode, false);
+      if (document.visibilityState === "visible") void refreshInbox(mode, false, false);
     }, 10000);
     return () => window.clearInterval(timer);
   }, [mode, ready, refreshInbox]);
@@ -457,11 +598,11 @@ export default function MccMessagingInbox() {
         throw new Error(payload.detail || payload.error || "Message could not be sent");
       }
       setDraft("");
+      const needsHydration = !selectedId || Boolean(composeContact);
       setSelectedId(payload.conversationId);
-      setComposeContact(null);
       await Promise.all([
-        openConversation(payload.conversationId, false),
-        refreshInbox(mode, false),
+        openConversation(payload.conversationId, needsHydration),
+        refreshInbox(mode, false, false),
       ]);
       requestAnimationFrame(scrollThreadToBottom);
     } catch (err) {
@@ -469,7 +610,7 @@ export default function MccMessagingInbox() {
     } finally {
       setSending(false);
     }
-  }, [activeContact, currentUser, draft, messagingBlocked, mode, openConversation, refreshInbox, scrollThreadToBottom, selectedId, sending]);
+  }, [activeContact, composeContact, currentUser, draft, messagingBlocked, mode, openConversation, refreshInbox, scrollThreadToBottom, selectedId, sending]);
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -489,7 +630,11 @@ export default function MccMessagingInbox() {
     setContactResults([]);
     setSelectedId(null);
     setConversation(null);
+    messagesDataRef.current = [];
+    previousMessageSignature.current = "";
+    nextBeforeRef.current = null;
     setMessages([]);
+    setHasMoreMessages(false);
     setContact(null);
     setComposeContact(target);
     setDraft("");
@@ -564,6 +709,13 @@ export default function MccMessagingInbox() {
 
             <div className={styles.messagePane} ref={messagePaneRef}>
               {threadLoading ? <div className={styles.threadState}>Loading conversation…</div> : null}
+              {!threadLoading && messages.length > 0 && hasMoreMessages ? (
+                <div className={styles.loadEarlierWrap}>
+                  <button type="button" onClick={() => void loadEarlierMessages()} disabled={loadingOlder}>
+                    {loadingOlder ? "Loading…" : "Load earlier messages"}
+                  </button>
+                </div>
+              ) : null}
               {!threadLoading && messages.length === 0 ? (
                 <div className={styles.emptyThread}>
                   <div>✦</div>
