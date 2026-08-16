@@ -154,6 +154,11 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : new Date()
   ).toISOString();
 
+  // The live database currently constrains source to the original values.
+  // Preserve Cliq sender identity in the dedicated sender fields and persist
+  // Cliq replies under Automation until the DB constraint is widened to Cliq.
+  const persistenceSource = input.source === "Cliq" ? "Automation" : input.source;
+
   await insertOutgoingMessage({
     conversationId: conversation.id,
     twilioMessageSid: twilioMessage.sid,
@@ -163,7 +168,7 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     toPhone: customerPhone,
     sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
     sentByName: input.sentByName?.trim() || null,
-    source: input.source,
+    source: persistenceSource,
     twilioDateCreated:
       twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
     twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
