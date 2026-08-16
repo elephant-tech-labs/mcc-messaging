@@ -30,14 +30,28 @@ export async function getZohoContactById(id: string): Promise<ZohoContact | null
 }
 
 export async function getZohoContactsByIds(ids: string[]): Promise<ZohoContact[]> {
-  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].slice(0, 100);
+  const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))].slice(0, 2000);
   if (uniqueIds.length === 0) return [];
 
-  const response = await zohoFetch<ZohoDataResponse<ZohoContact>>(
-    `/crm/v8/Contacts?ids=${encodeURIComponent(uniqueIds.join(","))}&fields=${CONTACT_FIELDS}&per_page=100`,
-  );
+  const chunks: string[][] = [];
+  for (let index = 0; index < uniqueIds.length; index += 100) {
+    chunks.push(uniqueIds.slice(index, index + 100));
+  }
 
-  return response.data ?? [];
+  const contacts: ZohoContact[] = [];
+  for (let index = 0; index < chunks.length; index += 4) {
+    const batch = chunks.slice(index, index + 4);
+    const responses = await Promise.all(
+      batch.map((chunk) =>
+        zohoFetch<ZohoDataResponse<ZohoContact>>(
+          `/crm/v8/Contacts?ids=${encodeURIComponent(chunk.join(","))}&fields=${CONTACT_FIELDS}&per_page=100`,
+        ),
+      ),
+    );
+    for (const response of responses) contacts.push(...(response.data ?? []));
+  }
+
+  return contacts;
 }
 
 export async function findZohoContactByPhone(e164Phone: string): Promise<ZohoContact | null> {
