@@ -82,6 +82,53 @@ function senderIdentity(params: UnknownRecord): { id: string | null; name: strin
   };
 }
 
+function responseUrl(payload: UnknownRecord): string | null {
+  return stringValue(payload.response_url, payload.responseUrl);
+}
+
+function isAllowedCliqResponseUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /^cliq\.zoho\.[a-z.]+$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+async function sendCliqResult(payload: UnknownRecord, text: string): Promise<Response> {
+  const callbackUrl = responseUrl(payload);
+
+  if (callbackUrl && isAllowedCliqResponseUrl(callbackUrl)) {
+    try {
+      const response = await fetch(callbackUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ output: { text } }),
+        cache: "no-store",
+      });
+
+      if (response.ok) {
+        // The one-time response_url delivered the user-visible result. Return an
+        // empty success acknowledgement so Cliq does not try to render a second
+        // synchronous response or show a false technical-error banner.
+        return new Response(null, { status: 200 });
+      }
+
+      console.warn("Zoho Cliq function response callback failed", {
+        status: response.status,
+      });
+    } catch (error) {
+      console.warn(
+        "Zoho Cliq function response callback error",
+        error instanceof Error ? error.message.slice(0, 180) : "Unknown callback error",
+      );
+    }
+  }
+
+  // Fallback for rare cases where response_url is missing or expired.
+  return NextResponse.json({ output: { text } });
+}
+
 export async function POST(request: Request) {
   const url = new URL(request.url);
   if (!safeEqual(url.searchParams.get("secret"), requiredEnv("ZOHO_CLIQ_WEBHOOK_SECRET"))) {
@@ -116,18 +163,21 @@ export async function POST(request: Request) {
     hasReplyBody: Boolean(body),
     replyLength: body?.length ?? 0,
     hasUserId: Boolean(sender.id),
+    hasResponseUrl: Boolean(responseUrl(payload)),
   });
 
   if (!conversationId) {
-    return NextResponse.json({
-      text: "Could not identify the SMS conversation. Please use Reply on a newly received MCC SMS alert.",
-    });
+    return sendCliqResult(
+      payload,
+      "Could not identify the SMS conversation. Please use Reply on a newly received MCC SMS alert.",
+    );
   }
 
   if (!body) {
-    return NextResponse.json({
-      text: "No reply text was received. Please click Reply and enter your SMS message.",
-    });
+    return sendCliqResult(
+      payload,
+      "No reply text was received. Please click Reply and enter your SMS message.",
+    );
   }
 
   try {
@@ -145,22 +195,24 @@ export async function POST(request: Request) {
       crmSynced: result.crmSynced,
     });
 
-    return NextResponse.json({
-      text: result.crmSynced
+    return sendCliqResult(
+      payload,
+      result.crmSynced
         ? "✅ SMS sent. Delivery status will sync automatically."
         : "✅ SMS sent. CRM summary sync is delayed, but delivery tracking is active.",
-    });
+    );
   } catch (error) {
     if (error instanceof SmsSendError) {
-      return NextResponse.json({ text: `SMS not sent: ${error.message}` });
+      return sendCliqResult(payload, `SMS not sent: ${error.message}`);
     }
 
     console.error(
       "Zoho Cliq SMS reply failed",
       error instanceof Error ? error.message.slice(0, 220) : "Unknown Cliq send error",
     );
-    return NextResponse.json({
-      text: "SMS could not be sent due to a server error. Please retry from the CRM conversation.",
-    });
+    return sendCliqResult(
+      payload,
+      "SMS could not be sent due to a server error. Please retry from the CRM conversation.",
+    );
   }
 }
