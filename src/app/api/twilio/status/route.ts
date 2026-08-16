@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { syncBulkSmsRecipientStatus } from "@/lib/messaging/bulk-sms";
 import { applyMessageStatus } from "@/lib/messaging/repository";
 import { formDataToRecord, validateTwilioWebhook } from "@/lib/twilio/validate";
 import { normalizeTwilioStatus, toZohoMessageStatus } from "@/lib/twilio/status";
@@ -17,7 +18,6 @@ export async function POST(request: Request) {
 
   const messageSid = params.MessageSid || params.SmsSid;
   const rawStatus = params.MessageStatus || params.SmsStatus;
-
   if (!messageSid || !rawStatus) {
     return NextResponse.json({ error: "Missing MessageSid or MessageStatus" }, { status: 400 });
   }
@@ -32,25 +32,28 @@ export async function POST(request: Request) {
       errorMessage: params.ErrorMessage || null,
     });
 
-    // Status callbacks may also arrive for messages still sent by the legacy Zoho Flow.
-    // Ignore unknown SIDs instead of causing Twilio retries while both systems coexist.
-    if (!result.message) {
-      return new Response(null, { status: 204 });
+    if (!result.message) return new Response(null, { status: 204 });
+
+    // Bulk reporting is a projection of the canonical messaging message status.
+    // Do not make Twilio retry a callback if the optional bulk projection is unavailable.
+    try {
+      await syncBulkSmsRecipientStatus({
+        twilioMessageSid: messageSid,
+        status,
+        errorCode: params.ErrorCode || null,
+        errorMessage: params.ErrorMessage || null,
+      });
+    } catch {
+      // A later widget refresh/reconciliation can repair bulk reporting.
     }
 
-    if (
-      result.applied &&
-      result.isLatestOutgoing &&
-      result.conversation?.zoho_conversation_id
-    ) {
+    if (result.applied && result.isLatestOutgoing && result.conversation?.zoho_conversation_id) {
       try {
-        await updateZohoMessagingConversation(
-          result.conversation.zoho_conversation_id,
-          { lastMessageStatus: toZohoMessageStatus(status) },
-        );
+        await updateZohoMessagingConversation(result.conversation.zoho_conversation_id, {
+          lastMessageStatus: toZohoMessageStatus(status),
+        });
       } catch {
-        // Twilio should receive success once the authoritative delivery state is persisted.
-        // Zoho summary sync is recoverable and must not trigger duplicate callback retries.
+        // Supabase is canonical; CRM summary sync is recoverable.
       }
     }
 
