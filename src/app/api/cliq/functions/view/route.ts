@@ -4,6 +4,7 @@ import { requiredEnv } from "@/lib/env";
 import { getConversationById, type MessagingMessage } from "@/lib/messaging/repository";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getZohoContactById } from "@/lib/zoho/contacts";
+import { zohoContactRecordUrl } from "@/lib/zoho/crm-url";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -74,9 +75,11 @@ function preview(value: string | null, limit = 260): string {
 
 function messageLine(message: MessagingMessage): string {
   const incoming = message.direction.toLowerCase() === "incoming";
-  const speaker = incoming ? "Customer" : "MCC";
-  const status = incoming ? "" : ` · ${message.status}`;
-  return `${incoming ? "⬅️" : "➡️"} ${speaker}${status}\n${preview(message.body)}`;
+  if (incoming) return `⬅️ Customer\n${preview(message.body)}`;
+
+  const sender = message.sent_by_name?.trim();
+  const senderSuffix = sender ? ` · ${sender}` : "";
+  return `➡️ MCC · ${message.status}${senderSuffix}\n${preview(message.body)}`;
 }
 
 async function sendCliqResponse(payload: UnknownRecord, output: UnknownRecord): Promise<NextResponse> {
@@ -158,32 +161,41 @@ export async function POST(request: Request) {
 
     const text = `💬 Recent SMS with ${label}\n${conversation.customer_phone}\n\n${transcript}`;
 
-    const output: UnknownRecord = {
-      text,
-      buttons: [
-        {
-          label: "Reply",
-          type: "+",
-          key: `reply:${conversation.id}`,
-          action: {
-            type: "invoke.function",
-            data: { name: REPLY_FUNCTION_NAME },
-            confirm: {
-              title: `Reply to ${label}`.slice(0, 100),
-              description: `Send an SMS reply to ${conversation.customer_phone}`.slice(0, 100),
-              input: "Type your SMS reply",
-              emotion: "positive",
-              button_label: "Send SMS",
-              cancel_button_label: "Cancel",
-              mandatory: "true",
-            },
+    const buttons: Array<Record<string, unknown>> = [
+      {
+        label: "Reply",
+        type: "+",
+        key: `reply:${conversation.id}`,
+        action: {
+          type: "invoke.function",
+          data: { name: REPLY_FUNCTION_NAME },
+          confirm: {
+            title: `Reply to ${label}`.slice(0, 100),
+            description: `Send an SMS reply to ${conversation.customer_phone}`.slice(0, 100),
+            input: "Type your SMS reply",
+            emotion: "positive",
+            button_label: "Send SMS",
+            cancel_button_label: "Cancel",
+            mandatory: "true",
           },
-          arguments: { conversationId: conversation.id },
         },
-      ],
-    };
+        arguments: { conversationId: conversation.id },
+      },
+    ];
 
-    return sendCliqResponse(payload, output);
+    if (conversation.zoho_contact_id) {
+      buttons.push({
+        label: "Open in CRM",
+        type: "+",
+        key: `crm:${conversation.zoho_contact_id}`,
+        action: {
+          type: "open.url",
+          data: { web: zohoContactRecordUrl(conversation.zoho_contact_id) },
+        },
+      });
+    }
+
+    return sendCliqResponse(payload, { text, buttons });
   } catch (error) {
     console.error(
       "Zoho Cliq conversation view failed",
