@@ -165,9 +165,9 @@ export async function POST(request: Request) {
 
   // Zoho's webhook payload currently identifies a bot-menu invocation as
   // action_handler even though the configured execution handler is menu_handler.
-  // MCC Messages currently has a single custom bot action: New SMS.
+  // Webhook execution responses are wrapped in `output` before Cliq renders them.
   if (type === "menu_handler" || type === "action_handler") {
-    return NextResponse.json(newSmsForm());
+    return NextResponse.json({ output: newSmsForm() });
   }
 
   // Ordinary messages should not generate generic bot chatter. Explicit actions
