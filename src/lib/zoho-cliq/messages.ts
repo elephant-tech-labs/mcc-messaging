@@ -2,6 +2,7 @@ import { cliqFetch } from "@/lib/zoho-cliq/client";
 
 const MCC_BOT_UNIQUE_NAME = "mccmessagesx";
 const MCC_REPLY_FUNCTION_NAME = "mccsmsreply";
+const MCC_VIEW_FUNCTION_NAME = "mccsmsview";
 
 type BotMessageResponse = {
   chat_id?: string;
@@ -56,6 +57,18 @@ export async function sendIncomingSmsCliqNotification(
                 cancel_button_label: "Cancel",
                 mandatory: "true",
               },
+            },
+            arguments: {
+              conversationId: input.conversationId,
+            },
+          },
+          {
+            label: "View Conversation",
+            type: "+",
+            key: `view:${input.conversationId}`,
+            action: {
+              type: "invoke.function",
+              data: { name: MCC_VIEW_FUNCTION_NAME },
             },
             arguments: {
               conversationId: input.conversationId,
