@@ -16,7 +16,7 @@ import {
   updateZohoMessagingConversation,
 } from "@/lib/zoho/conversations";
 
-export type SmsSendSource = "CRM Widget" | "Cliq" | "Automation";
+export type SmsSendSource = "CRM Widget" | "Cliq" | "Bulk SMS" | "Automation";
 
 export class SmsSendError extends Error {
   status: number;
@@ -50,6 +50,10 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message.slice(0, 300) : "Unknown error";
 }
 
+function conversationOrigin(source: SmsSendSource): "CRM Widget" | "Automation" {
+  return source === "Automation" || source === "Bulk SMS" ? "Automation" : "CRM Widget";
+}
+
 async function resolveConversation(input: SendSmsInput): Promise<{
   conversation: MessagingConversation;
   zohoContactId: string;
@@ -60,11 +64,9 @@ async function resolveConversation(input: SendSmsInput): Promise<{
 
   if (input.conversationId?.trim()) {
     const conversation = await getConversationById(input.conversationId.trim());
-    if (!conversation) {
-      throw new SmsSendError("Messaging conversation not found", 404);
-    }
+    if (!conversation) throw new SmsSendError("Messaging conversation not found", 404);
     if (conversation.channel !== "SMS") {
-      throw new SmsSendError("Only SMS conversations can be replied to from Cliq", 409);
+      throw new SmsSendError("Only SMS conversations can be replied to", 409);
     }
     if (!conversation.zoho_contact_id) {
       throw new SmsSendError(
@@ -75,19 +77,21 @@ async function resolveConversation(input: SendSmsInput): Promise<{
     if (normalizePhone(conversation.twilio_phone) !== configuredTwilioPhone) {
       throw new SmsSendError("Conversation belongs to a different MCC sender number", 409);
     }
+    const customerPhone = normalizePhone(conversation.customer_phone);
+    if (customerPhone === configuredTwilioPhone) {
+      throw new SmsSendError("Sending to the MCC Twilio sender number is blocked", 409);
+    }
 
     return {
       conversation,
       zohoContactId: conversation.zoho_contact_id,
-      customerPhone: normalizePhone(conversation.customer_phone),
+      customerPhone,
       twilioPhone: configuredTwilioPhone,
     };
   }
 
   const zohoContactId = input.zohoContactId?.trim();
-  if (!zohoContactId) {
-    throw new SmsSendError("zohoContactId or conversationId is required", 400);
-  }
+  if (!zohoContactId) throw new SmsSendError("zohoContactId or conversationId is required", 400);
 
   const contact = await getZohoContactById(zohoContactId);
   if (!contact) throw new SmsSendError("Zoho Contact not found", 404);
@@ -99,36 +103,29 @@ async function resolveConversation(input: SendSmsInput): Promise<{
   }
 
   const customerPhone = normalizePhone(contact.Phone);
+  if (customerPhone === configuredTwilioPhone) {
+    throw new SmsSendError("Sending to the MCC Twilio sender number is blocked", 409);
+  }
+
   const conversation = await findOrCreateConversation({
     zohoContactId,
     customerPhone,
     twilioPhone: configuredTwilioPhone,
-    createdFrom: input.source === "Automation" ? "Automation" : "CRM Widget",
+    createdFrom: conversationOrigin(input.source),
   });
 
-  return {
-    conversation,
-    zohoContactId,
-    customerPhone,
-    twilioPhone: configuredTwilioPhone,
-  };
+  return { conversation, zohoContactId, customerPhone, twilioPhone: configuredTwilioPhone };
 }
 
 export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
   const body = input.body.trim();
   if (!body) throw new SmsSendError("body is required", 400);
-  if (body.length > 1600) {
-    throw new SmsSendError("SMS body must be 1600 characters or fewer", 400);
-  }
+  if (body.length > 1600) throw new SmsSendError("SMS body must be 1600 characters or fewer", 400);
 
-  let { conversation, zohoContactId, customerPhone, twilioPhone } =
-    await resolveConversation(input);
+  let { conversation, zohoContactId, customerPhone, twilioPhone } = await resolveConversation(input);
 
   if (conversation.opt_out_status !== "Active") {
-    throw new SmsSendError(
-      `Messaging blocked by opt-out status: ${conversation.opt_out_status}`,
-      409,
-    );
+    throw new SmsSendError(`Messaging blocked by opt-out status: ${conversation.opt_out_status}`, 409);
   }
 
   if (!conversation.zoho_conversation_id) {
@@ -137,7 +134,7 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
       customerPhone,
       twilioPhone,
       externalConversationId: conversation.id,
-      createdFrom: input.source === "Automation" ? "Automation" : "CRM Widget",
+      createdFrom: conversationOrigin(input.source),
     });
     conversation = await attachZohoConversationId(conversation.id, zohoConversationId);
   }
@@ -164,8 +161,7 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
     sentByName: input.sentByName?.trim() || null,
     source: input.source,
-    twilioDateCreated:
-      twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
+    twilioDateCreated: twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
     twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
   });
 
