@@ -5,6 +5,7 @@ import { requiredEnv } from "@/lib/env";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+const NEW_SMS_FUNCTION_NAME = "mccnewsms";
 type UnknownRecord = Record<string, unknown>;
 
 function safeEqual(left: string | null, right: string): boolean {
@@ -28,12 +29,15 @@ function stringValue(...values: unknown[]): string | null {
 }
 
 function handlerType(payload: UnknownRecord): string | null {
+  const params = record(payload.params);
   const handler = record(payload.handler);
   const execution = record(payload.execution);
   const executionDetails = record(payload.execution_details);
   return stringValue(
     payload.handler_type,
     payload.handlerType,
+    params.handler_type,
+    params.handlerType,
     handler.type,
     execution.handler_type,
     execution.type,
@@ -44,7 +48,8 @@ function handlerType(payload: UnknownRecord): string | null {
 }
 
 function responseUrl(payload: UnknownRecord): string | null {
-  return stringValue(payload.response_url, payload.responseUrl);
+  const params = record(payload.params);
+  return stringValue(payload.response_url, payload.responseUrl, params.response_url, params.responseUrl);
 }
 
 function isAllowedCliqResponseUrl(value: string): boolean {
@@ -81,12 +86,46 @@ async function sendCliqResponse(payload: UnknownRecord, text: string): Promise<b
 
 async function reply(payload: UnknownRecord, text: string): Promise<NextResponse> {
   const delivered = await sendCliqResponse(payload, text);
-
-  if (delivered) {
-    return NextResponse.json({ ok: true });
-  }
-
+  if (delivered) return NextResponse.json({ ok: true });
   return NextResponse.json({ output: { text } });
+}
+
+function newSmsForm(): UnknownRecord {
+  return {
+    type: "form",
+    title: "New MCC SMS",
+    name: "mcc_new_sms",
+    version: 1,
+    hint: "Search a Zoho CRM Contact and send an SMS from the MCC Twilio number.",
+    button_label: "Send SMS",
+    trigger_on_cancel: true,
+    action: {
+      type: "invoke.function",
+      name: NEW_SMS_FUNCTION_NAME,
+    },
+    inputs: [
+      {
+        type: "dynamic_select",
+        name: "contact",
+        label: "CRM Contact",
+        hint: "Search by contact name. Only Contacts with a Phone value can be selected.",
+        placeholder: "Start typing a contact name",
+        mandatory: true,
+        trigger_on_change: true,
+        options: [],
+      },
+      {
+        type: "textarea",
+        name: "message",
+        label: "SMS Message",
+        hint: "The message will be sent through the existing MCC Twilio number.",
+        placeholder: "Type your message",
+        mandatory: true,
+        min_length: 1,
+        max_length: 1600,
+      },
+    ],
+  };
 }
 
 function silent(): Response {
@@ -119,16 +158,19 @@ export async function POST(request: Request) {
   if (type === "welcome_handler") {
     return reply(
       payload,
-      "MCC Messages is connected. You’ll be able to receive and reply to MCC SMS conversations here.",
+      "MCC Messages is connected. You can receive and reply to MCC SMS conversations here, or use New SMS from the bot menu to start one.",
     );
   }
 
-  // Ordinary messages should not generate generic bot chatter. Future reply/search
-  // actions will be explicit button, form, menu, or command handlers.
-  if (type === "message_handler") {
-    return silent();
+  if (type === "menu_handler") {
+    // Bot menu responses are rendered synchronously by Cliq. Returning the form
+    // directly matches the platform's menu-handler form response contract.
+    return NextResponse.json(newSmsForm());
   }
 
-  // Unknown/unhandled bot events are intentionally acknowledged without a message.
+  // Ordinary messages should not generate generic bot chatter. Explicit actions
+  // are handled through buttons, forms, and the New SMS menu.
+  if (type === "message_handler") return silent();
+
   return silent();
 }
