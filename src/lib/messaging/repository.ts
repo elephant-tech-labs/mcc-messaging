@@ -46,8 +46,29 @@ export type MessagingMessage = {
   updated_at: string;
 };
 
+export type MessagePage = {
+  messages: MessagingMessage[];
+  has_more: boolean;
+  next_before: string | null;
+};
+
 function throwIfError(error: { message?: string } | null, context: string): void {
   if (error) throw new Error(`${context}: ${error.message ?? "database error"}`);
+}
+
+function safeMessageLimit(limit: number): number {
+  return Math.max(1, Math.min(200, limit));
+}
+
+function toMessagePage(rows: MessagingMessage[], limit: number): MessagePage {
+  const hasMore = rows.length > limit;
+  const selected = rows.slice(0, limit);
+  const oldest = selected[selected.length - 1] ?? null;
+  return {
+    messages: selected.reverse(),
+    has_more: hasMore,
+    next_before: hasMore && oldest ? oldest.created_at : null,
+  };
 }
 
 export async function getConversationById(
@@ -124,10 +145,7 @@ export async function findOrCreateConversation(input: {
   twilioPhone: string;
   createdFrom: "CRM Widget" | "Automation" | "Incoming SMS" | "Import";
 }): Promise<MessagingConversation> {
-  return (
-    (await findConversation(input)) ??
-    createConversation(input)
-  );
+  return (await findConversation(input)) ?? createConversation(input);
 }
 
 export async function attachZohoConversationId(
@@ -154,7 +172,7 @@ export async function insertOutgoingMessage(input: {
   toPhone: string;
   sentByZohoUserId?: string | null;
   sentByName?: string | null;
-  source: "CRM Widget" | "Cliq" | "Automation";
+  source: "CRM Widget" | "Cliq" | "Bulk SMS" | "Automation";
   twilioDateCreated?: Date | null;
   twilioDateSent?: Date | null;
 }): Promise<MessagingMessage> {
@@ -295,25 +313,40 @@ export async function applyMessageStatus(input: {
   };
 }
 
-export async function getConversationMessages(
+export async function getConversationMessagesPage(
   conversationId: string,
-  limit = 100,
-): Promise<MessagingMessage[]> {
-  const safeLimit = Math.max(1, Math.min(200, limit));
-  const { data, error } = await getSupabaseAdmin()
+  options: { limit?: number; before?: string | null } = {},
+): Promise<MessagePage> {
+  const limit = safeMessageLimit(options.limit ?? 100);
+  let query = getSupabaseAdmin()
     .from("messaging_messages")
     .select("*")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: false })
-    .limit(safeLimit);
+    .limit(limit + 1);
 
+  if (options.before) query = query.lt("created_at", options.before);
+
+  const { data, error } = await query;
   throwIfError(error, "Load messaging conversation messages failed");
-  return ((data ?? []) as MessagingMessage[]).reverse();
+  return toMessagePage((data ?? []) as MessagingMessage[], limit);
 }
 
-export async function getContactThread(zohoContactId: string): Promise<{
+export async function getConversationMessages(
+  conversationId: string,
+  limit = 100,
+): Promise<MessagingMessage[]> {
+  return (await getConversationMessagesPage(conversationId, { limit })).messages;
+}
+
+export async function getContactThreadPage(
+  zohoContactId: string,
+  options: { limit?: number; before?: string | null } = {},
+): Promise<{
   conversations: MessagingConversation[];
   messages: MessagingMessage[];
+  has_more: boolean;
+  next_before: string | null;
 }> {
   const { data: conversations, error: conversationError } = await getSupabaseAdmin()
     .from("messaging_conversations")
@@ -324,17 +357,36 @@ export async function getContactThread(zohoContactId: string): Promise<{
 
   const typedConversations = (conversations ?? []) as MessagingConversation[];
   const ids = typedConversations.map((conversation) => conversation.id);
-  if (ids.length === 0) return { conversations: [], messages: [] };
+  if (ids.length === 0) {
+    return { conversations: [], messages: [], has_more: false, next_before: null };
+  }
 
-  const { data: messages, error: messageError } = await getSupabaseAdmin()
+  const limit = safeMessageLimit(options.limit ?? 100);
+  let messageQuery = getSupabaseAdmin()
     .from("messaging_messages")
     .select("*")
     .in("conversation_id", ids)
-    .order("created_at", { ascending: true });
+    .order("created_at", { ascending: false })
+    .limit(limit + 1);
+
+  if (options.before) messageQuery = messageQuery.lt("created_at", options.before);
+
+  const { data: messages, error: messageError } = await messageQuery;
   throwIfError(messageError, "Load contact SMS history failed");
+  const page = toMessagePage((messages ?? []) as MessagingMessage[], limit);
 
   return {
     conversations: typedConversations,
-    messages: (messages ?? []) as MessagingMessage[],
+    messages: page.messages,
+    has_more: page.has_more,
+    next_before: page.next_before,
   };
+}
+
+export async function getContactThread(zohoContactId: string): Promise<{
+  conversations: MessagingConversation[];
+  messages: MessagingMessage[];
+}> {
+  const page = await getContactThreadPage(zohoContactId, { limit: 200 });
+  return { conversations: page.conversations, messages: page.messages };
 }
