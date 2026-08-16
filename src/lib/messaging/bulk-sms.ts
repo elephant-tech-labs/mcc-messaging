@@ -15,6 +15,25 @@ export type BulkPreviewRecipient = {
   skipReason: string | null;
 };
 
+export type BulkSmsJobSummary = {
+  id: string;
+  name: string | null;
+  message_template: string;
+  status: string;
+  total_selected: number;
+  eligible_count: number;
+  skipped_count: number;
+  created_by_name: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  pendingCount: number;
+  deliveredCount: number;
+  acceptedCount: number;
+  failedCount: number;
+  skippedCount: number;
+};
+
 type BulkRecipientRow = {
   id: string;
   job_id: string;
@@ -276,6 +295,43 @@ export async function processBulkSmsBatch(jobId: string, batchSize = 8): Promise
 
   const status = await getBulkSmsJobStatus(jobId);
   return { processed: recipients.length, done: status.pendingCount === 0 };
+}
+
+export async function listBulkSmsJobs(limit = 30): Promise<BulkSmsJobSummary[]> {
+  const safeLimit = Math.max(1, Math.min(100, limit));
+  const { data: jobs, error: jobsError } = await getSupabaseAdmin()
+    .from("bulk_sms_jobs")
+    .select("id,name,message_template,status,total_selected,eligible_count,skipped_count,created_by_name,started_at,completed_at,created_at")
+    .order("created_at", { ascending: false })
+    .limit(safeLimit);
+  if (jobsError) throw new Error(`Load bulk SMS jobs failed: ${jobsError.message}`);
+  if (!jobs || jobs.length === 0) return [];
+
+  const jobIds = jobs.map((job) => job.id);
+  const { data: recipientStatuses, error: recipientsError } = await getSupabaseAdmin()
+    .from("bulk_sms_recipients")
+    .select("job_id,status")
+    .in("job_id", jobIds);
+  if (recipientsError) throw new Error(`Load bulk SMS job counts failed: ${recipientsError.message}`);
+
+  const counts = new Map<string, Record<string, number>>();
+  for (const row of recipientStatuses ?? []) {
+    const current = counts.get(row.job_id) ?? {};
+    current[row.status] = (current[row.status] ?? 0) + 1;
+    counts.set(row.job_id, current);
+  }
+
+  return jobs.map((job) => {
+    const count = counts.get(job.id) ?? {};
+    return {
+      ...job,
+      pendingCount: (count.queued ?? 0) + (count.processing ?? 0),
+      deliveredCount: count.delivered ?? 0,
+      acceptedCount: (count.accepted ?? 0) + (count.sent ?? 0),
+      failedCount: (count.failed ?? 0) + (count.undelivered ?? 0),
+      skippedCount: count.skipped ?? 0,
+    } as BulkSmsJobSummary;
+  });
 }
 
 export async function getBulkSmsJobStatus(jobId: string) {
