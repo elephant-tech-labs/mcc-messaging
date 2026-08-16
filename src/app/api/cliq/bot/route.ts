@@ -8,7 +8,9 @@ export const dynamic = "force-dynamic";
 
 const MCC_BOT_UNIQUE_NAME = "mccmessagesx";
 const NEW_SMS_MENU_NAME = "New SMS";
+const INBOX_MENU_NAME = "Inbox";
 const COMPOSE_FUNCTION_NAME = "mccsmscompose";
+const INBOX_FUNCTION_NAME = "mccsmsinbox";
 type UnknownRecord = Record<string, unknown>;
 
 function safeEqual(left: string | null, right: string): boolean {
@@ -110,26 +112,62 @@ function cliqUserId(payload: UnknownRecord): string | null {
   );
 }
 
-async function sendComposePrompt(userId: string): Promise<void> {
+async function sendTargetedBotMessage(
+  userId: string,
+  body: Record<string, unknown>,
+): Promise<void> {
   const path = `/bots/${encodeURIComponent(MCC_BOT_UNIQUE_NAME)}/messages?user_ids=${encodeURIComponent(userId)}`;
-
   await cliqFetch(path, {
     method: "POST",
     body: JSON.stringify({
-      text: "Start a new MCC SMS conversation.",
-      buttons: [
-        {
-          label: "Compose SMS",
-          type: "+",
-          action: {
-            type: "invoke.function",
-            data: { name: COMPOSE_FUNCTION_NAME },
-          },
-        },
-      ],
+      ...body,
       sync_message: true,
       mark_as_read: true,
     }),
+  });
+}
+
+async function sendComposePrompt(userId: string): Promise<void> {
+  await sendTargetedBotMessage(userId, {
+    text: "Start a new MCC SMS conversation.",
+    buttons: [
+      {
+        label: "Compose SMS",
+        type: "+",
+        action: {
+          type: "invoke.function",
+          data: { name: COMPOSE_FUNCTION_NAME },
+        },
+      },
+    ],
+  });
+}
+
+async function sendInboxPrompt(userId: string): Promise<void> {
+  await sendTargetedBotMessage(userId, {
+    text: "📥 MCC SMS Inbox\nChoose what you want to review.",
+    buttons: [
+      {
+        label: "Unread",
+        type: "+",
+        key: "inbox:unread",
+        action: {
+          type: "invoke.function",
+          data: { name: INBOX_FUNCTION_NAME },
+        },
+        arguments: { mode: "unread" },
+      },
+      {
+        label: "Recent",
+        type: "+",
+        key: "inbox:recent",
+        action: {
+          type: "invoke.function",
+          data: { name: INBOX_FUNCTION_NAME },
+        },
+        arguments: { mode: "recent" },
+      },
+    ],
   });
 }
 
@@ -167,34 +205,45 @@ export async function POST(request: Request) {
   if (type === "welcome_handler") {
     return reply(
       payload,
-      "MCC Messages is connected. You can receive and reply to MCC SMS conversations here, or use New SMS from the bot menu to start one.",
+      "MCC Messages is connected. Use Inbox to review SMS conversations or New SMS to start one.",
     );
   }
 
-  if (
-    (type === "menu_handler" || type === "action_handler") &&
-    (!handlerName || handlerName.toLowerCase() === NEW_SMS_MENU_NAME.toLowerCase())
-  ) {
+  if (type === "menu_handler" || type === "action_handler") {
+    const normalizedName = handlerName?.toLowerCase();
     const userId = cliqUserId(payload);
-    if (!userId) {
-      const access = record(params.access ?? payload.access);
-      const user = record(params.user ?? payload.user);
-      console.warn("Cliq New SMS menu could not resolve the invoking user", {
-        accessKeys: Object.keys(access).slice(0, 20),
-        userKeys: Object.keys(user).slice(0, 20),
-      });
+
+    if (normalizedName === NEW_SMS_MENU_NAME.toLowerCase()) {
+      if (!userId) {
+        console.warn("Cliq New SMS menu could not resolve the invoking user");
+        return silent();
+      }
+      try {
+        await sendComposePrompt(userId);
+      } catch (error) {
+        console.error(
+          "Cliq New SMS compose prompt failed",
+          error instanceof Error ? error.message.slice(0, 220) : "Unknown compose prompt error",
+        );
+      }
       return silent();
     }
 
-    try {
-      await sendComposePrompt(userId);
-    } catch (error) {
-      console.error(
-        "Cliq New SMS compose prompt failed",
-        error instanceof Error ? error.message.slice(0, 220) : "Unknown compose prompt error",
-      );
+    if (normalizedName === INBOX_MENU_NAME.toLowerCase()) {
+      if (!userId) {
+        console.warn("Cliq Inbox menu could not resolve the invoking user");
+        return silent();
+      }
+      try {
+        await sendInboxPrompt(userId);
+      } catch (error) {
+        console.error(
+          "Cliq Inbox prompt failed",
+          error instanceof Error ? error.message.slice(0, 220) : "Unknown inbox prompt error",
+        );
+      }
+      return silent();
     }
-    return silent();
   }
 
   if (type === "message_handler") return silent();
