@@ -65,14 +65,9 @@ async function resolveConversation(input: SendSmsInput): Promise<{
   if (input.conversationId?.trim()) {
     const conversation = await getConversationById(input.conversationId.trim());
     if (!conversation) throw new SmsSendError("Messaging conversation not found", 404);
-    if (conversation.channel !== "SMS") {
-      throw new SmsSendError("Only SMS conversations can be replied to", 409);
-    }
+    if (conversation.channel !== "SMS") throw new SmsSendError("Only SMS conversations can be replied to", 409);
     if (!conversation.zoho_contact_id) {
-      throw new SmsSendError(
-        "This conversation is not matched to a Zoho Contact yet, so sending is blocked.",
-        409,
-      );
+      throw new SmsSendError("This conversation is not matched to a Zoho Contact yet, so sending is blocked.", 409);
     }
     if (normalizePhone(conversation.twilio_phone) !== configuredTwilioPhone) {
       throw new SmsSendError("Conversation belongs to a different MCC sender number", 409);
@@ -81,25 +76,15 @@ async function resolveConversation(input: SendSmsInput): Promise<{
     if (customerPhone === configuredTwilioPhone) {
       throw new SmsSendError("Sending to the MCC Twilio sender number is blocked", 409);
     }
-
-    return {
-      conversation,
-      zohoContactId: conversation.zoho_contact_id,
-      customerPhone,
-      twilioPhone: configuredTwilioPhone,
-    };
+    return { conversation, zohoContactId: conversation.zoho_contact_id, customerPhone, twilioPhone: configuredTwilioPhone };
   }
 
   const zohoContactId = input.zohoContactId?.trim();
   if (!zohoContactId) throw new SmsSendError("zohoContactId or conversationId is required", 400);
-
   const contact = await getZohoContactById(zohoContactId);
   if (!contact) throw new SmsSendError("Zoho Contact not found", 404);
   if (!contact.Phone) {
-    throw new SmsSendError(
-      "Zoho Contact has no Phone value. Contacts.Phone is required for MCC SMS.",
-      409,
-    );
+    throw new SmsSendError("Zoho Contact has no Phone value. Contacts.Phone is required for MCC SMS.", 409);
   }
 
   const customerPhone = normalizePhone(contact.Phone);
@@ -113,7 +98,6 @@ async function resolveConversation(input: SendSmsInput): Promise<{
     twilioPhone: configuredTwilioPhone,
     createdFrom: conversationOrigin(input.source),
   });
-
   return { conversation, zohoContactId, customerPhone, twilioPhone: configuredTwilioPhone };
 }
 
@@ -123,7 +107,6 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
   if (body.length > 1600) throw new SmsSendError("SMS body must be 1600 characters or fewer", 400);
 
   let { conversation, zohoContactId, customerPhone, twilioPhone } = await resolveConversation(input);
-
   if (conversation.opt_out_status !== "Active") {
     throw new SmsSendError(`Messaging blocked by opt-out status: ${conversation.opt_out_status}`, 409);
   }
@@ -147,9 +130,7 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     statusCallback: `${baseUrl}/api/twilio/status`,
   });
 
-  const occurredAt = (
-    twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : new Date()
-  ).toISOString();
+  const occurredAt = (twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : new Date()).toISOString();
 
   await insertOutgoingMessage({
     conversationId: conversation.id,
@@ -160,17 +141,12 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     toPhone: customerPhone,
     sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
     sentByName: input.sentByName?.trim() || null,
-    source: input.source,
+    source: input.source as "CRM Widget" | "Cliq" | "Automation",
     twilioDateCreated: twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
     twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
   });
 
-  conversation = await updateOutgoingSummary({
-    conversationId: conversation.id,
-    body,
-    status: twilioMessage.status,
-    occurredAt,
-  });
+  conversation = await updateOutgoingSummary({ conversationId: conversation.id, body, status: twilioMessage.status, occurredAt });
 
   let crmSynced = true;
   let crmSyncError: string | undefined;
