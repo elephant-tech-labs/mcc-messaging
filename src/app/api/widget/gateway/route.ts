@@ -13,9 +13,9 @@ import {
   type MessagingInboxMode,
 } from "@/lib/messaging/inbox";
 import {
-  getContactThread,
+  getContactThreadPage,
   getConversationById,
-  getConversationMessages,
+  getConversationMessagesPage,
 } from "@/lib/messaging/repository";
 import { sendSms, SmsSendError } from "@/lib/messaging/send-service";
 import {
@@ -32,9 +32,13 @@ export const dynamic = "force-dynamic";
 
 type WidgetAction =
   | "history"
+  | "historyPoll"
+  | "historyOlder"
   | "send"
   | "inbox"
   | "conversation"
+  | "conversationPoll"
+  | "conversationOlder"
   | "searchContacts"
   | "bulkPreview"
   | "bulkCreate"
@@ -54,6 +58,8 @@ type WidgetRequest = {
   messageTemplate?: string;
   jobName?: string;
   jobId?: string;
+  before?: string;
+  includeContacts?: boolean;
 };
 
 function cleanText(value: unknown): string | undefined {
@@ -69,6 +75,10 @@ function cleanContactIds(value: unknown): string[] {
 
 function validJobId(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+}
+
+function validBefore(value: string | undefined): value is string {
+  return Boolean(value && !Number.isNaN(new Date(value).getTime()));
 }
 
 function errorMessage(error: unknown): string {
@@ -98,6 +108,24 @@ function validContactId(value: string | undefined): value is string {
   return Boolean(value && /^\d{10,25}$/.test(value));
 }
 
+async function loadConversationForOpen(conversationId: string) {
+  let conversation = await getConversationById(conversationId);
+  if (!conversation) return null;
+
+  if (conversation.unread_count > 0) {
+    conversation = await markConversationRead(conversation.id);
+    if (conversation.zoho_conversation_id) {
+      try {
+        await updateZohoMessagingConversation(conversation.zoho_conversation_id, { unreadCount: 0 });
+      } catch {
+        // Supabase is canonical; CRM summary reconciliation can repair this later.
+      }
+    }
+  }
+
+  return conversation;
+}
+
 export async function POST(request: Request) {
   if (!hasValidWidgetKey(request)) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
@@ -110,7 +138,8 @@ export async function POST(request: Request) {
 
   const action = input.action;
   const supported: WidgetAction[] = [
-    "history", "send", "inbox", "conversation", "searchContacts",
+    "history", "historyPoll", "historyOlder", "send", "inbox",
+    "conversation", "conversationPoll", "conversationOlder", "searchContacts",
     "bulkPreview", "bulkCreate", "bulkProcess", "bulkStatus",
   ];
   if (!action || !supported.includes(action)) {
@@ -155,26 +184,66 @@ export async function POST(request: Request) {
       return NextResponse.json({ ok: true, status });
     }
 
-    if (action === "history") {
+    if (action === "history" || action === "historyPoll" || action === "historyOlder") {
       const zohoContactId = cleanText(input.zohoContactId);
       if (!validContactId(zohoContactId)) return NextResponse.json({ error: "Valid zohoContactId is required" }, { status: 400 });
-      const [contact, thread] = await Promise.all([getZohoContactById(zohoContactId), getContactThread(zohoContactId)]);
+
+      if (action === "historyOlder") {
+        const before = cleanText(input.before);
+        if (!validBefore(before)) return NextResponse.json({ error: "Valid before timestamp is required" }, { status: 400 });
+        const page = await getContactThreadPage(zohoContactId, { limit: 100, before });
+        return NextResponse.json({
+          ok: true,
+          conversations: page.conversations,
+          messages: page.messages,
+          has_more: page.has_more,
+          next_before: page.next_before,
+        });
+      }
+
+      if (action === "historyPoll") {
+        const page = await getContactThreadPage(zohoContactId, { limit: 50 });
+        return NextResponse.json({
+          ok: true,
+          conversations: page.conversations,
+          messages: page.messages,
+        });
+      }
+
+      const [contact, page] = await Promise.all([
+        getZohoContactById(zohoContactId),
+        getContactThreadPage(zohoContactId, { limit: 100 }),
+      ]);
       if (!contact) return NextResponse.json({ error: "Zoho Contact not found" }, { status: 404 });
-      return NextResponse.json({ ok: true, contact: contactView(contact), conversations: thread.conversations, messages: thread.messages });
+      return NextResponse.json({
+        ok: true,
+        contact: contactView(contact),
+        conversations: page.conversations,
+        messages: page.messages,
+        has_more: page.has_more,
+        next_before: page.next_before,
+      });
     }
 
     if (action === "inbox") {
       const mode: MessagingInboxMode = input.mode === "unread" ? "unread" : "recent";
+      const includeContacts = input.includeContacts !== false;
       const [conversations, unreadCount] = await Promise.all([
         listInboxConversations({ mode, limit: 75 }),
         countUnreadConversations(),
       ]);
-      const contactIds = conversations.map((conversation) => conversation.zoho_contact_id).filter((id): id is string => Boolean(id));
-      const contacts = await getZohoContactsByIds(contactIds);
-      const contactMap = new Map(contacts.map((contact) => [contact.id, contact]));
+
+      let contactMap = new Map<string, ZohoContact>();
+      if (includeContacts) {
+        const contactIds = conversations.map((conversation) => conversation.zoho_contact_id).filter((id): id is string => Boolean(id));
+        const contacts = await getZohoContactsByIds(contactIds);
+        contactMap = new Map(contacts.map((contact) => [contact.id, contact]));
+      }
+
       return NextResponse.json({
         ok: true,
         mode,
+        include_contacts: includeContacts,
         unread_count: unreadCount,
         conversations: conversations.map((conversation) => ({
           id: conversation.id,
@@ -187,29 +256,51 @@ export async function POST(request: Request) {
           unread_count: conversation.unread_count,
           opt_out_status: conversation.opt_out_status,
           zoho_contact_id: conversation.zoho_contact_id,
-          contact: conversation.zoho_contact_id ? contactView(contactMap.get(conversation.zoho_contact_id)) : null,
+          contact: includeContacts && conversation.zoho_contact_id ? contactView(contactMap.get(conversation.zoho_contact_id)) : null,
         })),
       });
     }
 
-    if (action === "conversation") {
+    if (action === "conversation" || action === "conversationPoll" || action === "conversationOlder") {
       const conversationId = cleanText(input.conversationId);
       if (!conversationId) return NextResponse.json({ error: "conversationId is required" }, { status: 400 });
-      let conversation = await getConversationById(conversationId);
-      if (!conversation) return NextResponse.json({ error: "Messaging conversation not found" }, { status: 404 });
-      if (conversation.unread_count > 0) {
-        conversation = await markConversationRead(conversation.id);
-        if (conversation.zoho_conversation_id) {
-          try {
-            await updateZohoMessagingConversation(conversation.zoho_conversation_id, { unreadCount: 0 });
-          } catch {}
-        }
+
+      if (action === "conversationOlder") {
+        const before = cleanText(input.before);
+        if (!validBefore(before)) return NextResponse.json({ error: "Valid before timestamp is required" }, { status: 400 });
+        const existing = await getConversationById(conversationId);
+        if (!existing) return NextResponse.json({ error: "Messaging conversation not found" }, { status: 404 });
+        const page = await getConversationMessagesPage(conversationId, { limit: 100, before });
+        return NextResponse.json({
+          ok: true,
+          conversation: existing,
+          messages: page.messages,
+          has_more: page.has_more,
+          next_before: page.next_before,
+        });
       }
-      const [messages, contact] = await Promise.all([
-        getConversationMessages(conversation.id, 100),
-        conversation.zoho_contact_id ? getZohoContactById(conversation.zoho_contact_id) : Promise.resolve(null),
-      ]);
-      return NextResponse.json({ ok: true, conversation, contact: contactView(contact), messages });
+
+      const conversation = await loadConversationForOpen(conversationId);
+      if (!conversation) return NextResponse.json({ error: "Messaging conversation not found" }, { status: 404 });
+      const page = await getConversationMessagesPage(conversation.id, {
+        limit: action === "conversationPoll" ? 50 : 100,
+      });
+
+      if (action === "conversationPoll") {
+        return NextResponse.json({ ok: true, conversation, messages: page.messages });
+      }
+
+      const contact = conversation.zoho_contact_id
+        ? await getZohoContactById(conversation.zoho_contact_id)
+        : null;
+      return NextResponse.json({
+        ok: true,
+        conversation,
+        contact: contactView(contact),
+        messages: page.messages,
+        has_more: page.has_more,
+        next_before: page.next_before,
+      });
     }
 
     if (action === "searchContacts") {
