@@ -11,7 +11,7 @@ export async function listInboxConversations(input: {
   mode: MessagingInboxMode;
   limit?: number;
 }): Promise<MessagingConversation[]> {
-  const limit = Math.max(1, Math.min(10, input.limit ?? 5));
+  const limit = Math.max(1, Math.min(100, input.limit ?? 5));
   let query = getSupabaseAdmin()
     .from("messaging_conversations")
     .select("*")
