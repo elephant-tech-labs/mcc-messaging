@@ -1,27 +1,47 @@
 # MCC Messaging
 
-Dedicated messaging service for Military Creator Con.
+Dedicated conversational messaging service for Military Creator Con.
 
-This repository owns the secure messaging boundary between Zoho CRM, Twilio, and the MCC Supabase project. It is intentionally deployed separately from the public MCC website so messaging webhooks and staff communications have an independent deployment lifecycle.
+This repository owns the secure messaging boundary between Zoho CRM, Twilio, Supabase, and the MCC staff messaging surfaces. It is intentionally deployed separately from the public MCC website so messaging webhooks and staff communications have an independent deployment lifecycle.
 
-## V1 responsibilities
+## Reference documentation
 
-- Receive inbound Twilio SMS webhooks
-- Validate `X-Twilio-Signature`
-- Match inbound phone numbers to `Contacts.Phone` in Zoho CRM
-- Create/find a Messaging Conversation
-- Persist conversations and individual messages in Supabase
-- Send outbound SMS from the future Zoho CRM widget
-- Receive Twilio delivery status callbacks
-- Update the Zoho `Messaging_Conversations` summary record
+Before adapting this system for another client, read:
+
+- [`docs/MESSAGING-REFERENCE-ARCHITECTURE.md`](docs/MESSAGING-REFERENCE-ARCHITECTURE.md) — architecture, invariants, failure handling, security, idempotency, reconciliation, bulk SMS, CRM/Cliq surfaces, and reusable design decisions.
+- [`docs/ZOHO-TWILIO-MESSAGING-ADAPTATION-PLAYBOOK.md`](docs/ZOHO-TWILIO-MESSAGING-ADAPTATION-PLAYBOOK.md) — step-by-step client adaptation playbook, including the Trident Inspection Group kickoff prompt.
+
+MCC is the proven **reference implementation**. Do not copy MCC-specific Zoho IDs, Twilio configuration, Supabase/Vercel identifiers, OAuth credentials, profile/layout IDs, or business assumptions into another client deployment.
+
+## Current responsibilities
+
+- Receive and validate inbound Twilio SMS webhooks.
+- Resolve inbound numbers safely against the configured Zoho CRM Contact phone field.
+- Persist matched and unmatched conversations/messages canonically in Supabase.
+- Send one-to-one SMS from Zoho CRM and Zoho Cliq.
+- Provide a Contact `Message` quick action and related-list conversation widget.
+- Provide the shared `MCC Messages` CRM Web Tab.
+- Receive and normalize Twilio delivery-status callbacks.
+- Enforce STOP/START opt-out state.
+- Protect outbound sends with server-side idempotency.
+- Maintain a self-healing, versioned Supabase → Zoho CRM conversation projection.
+- Provide persistent bulk SMS jobs, recipient processing, and delivery reporting.
+- Provide the `MCC Bulk Sends` reporting Web Tab.
+- Provide MCC team messaging access through Zoho Cliq.
 
 ## Infrastructure
 
-- Runtime: Next.js 16 on Vercel
-- Messaging: Twilio Programmable Messaging
-- CRM: Zoho CRM API v8
-- Database: existing Military Creator Con Supabase project
-- CRM conversation module API name: `Messaging_Conversations`
+- Runtime: Next.js on Vercel
+- Messaging transport: Twilio Programmable Messaging
+- CRM: Zoho CRM API
+- Canonical messaging database: Military Creator Con Supabase project
+- CRM conversation projection module API name: `Messaging_Conversations`
+
+## Core system rule
+
+Supabase is canonical for conversation/message state. Zoho CRM is the customer/business system of record and receives a recoverable conversation-summary projection. Twilio is transport.
+
+Historical conversation phone snapshots are preserved when a CRM Contact phone changes, and inbound identity is never guessed when multiple CRM Contacts share the same normalized phone number.
 
 ## Local setup
 
@@ -32,6 +52,6 @@ This repository owns the secure messaging boundary between Zoho CRM, Twilio, and
 
 ## Security boundary
 
-Twilio and Zoho credentials are server-only. Supabase service-role credentials are server-only. The Zoho widget must never contain Twilio, Zoho OAuth, or Supabase admin credentials.
+Twilio, Zoho OAuth, service keys, and Supabase privileged credentials are server-only. CRM widgets and future mobile clients must never contain those secrets.
 
-Twilio webhooks are signature-validated before processing. The outbound API is protected by a server-side service key until the Zoho widget authentication bridge is added.
+Twilio webhook signatures are validated before processing. Browser-facing CRM widgets use a secure server-side gateway/proxy rather than calling Twilio or privileged Supabase APIs directly.
