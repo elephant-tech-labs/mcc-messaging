@@ -1,5 +1,9 @@
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import type { MessagingConversation } from "@/lib/messaging/repository";
+import {
+  projectConversationToZoho,
+  runCrmReconciliationOpportunistically,
+} from "@/lib/messaging/crm-reconciliation";
 
 export type MessagingInboxMode = "unread" | "recent";
 
@@ -11,6 +15,8 @@ export async function listInboxConversations(input: {
   mode: MessagingInboxMode;
   limit?: number;
 }): Promise<MessagingConversation[]> {
+  await runCrmReconciliationOpportunistically();
+
   const limit = Math.max(1, Math.min(100, input.limit ?? 5));
   let query = getSupabaseAdmin()
     .from("messaging_conversations")
@@ -53,5 +59,18 @@ export async function markConversationRead(
     .single();
 
   throwIfError(error, "Mark messaging conversation read failed");
-  return data as MessagingConversation;
+  let conversation = data as MessagingConversation;
+
+  if (conversation.zoho_contact_id) {
+    try {
+      conversation = await projectConversationToZoho(conversation.id);
+    } catch (projectionError) {
+      console.warn(
+        "CRM read-state projection deferred for reconciliation",
+        projectionError instanceof Error ? projectionError.message.slice(0, 180) : "Unknown CRM sync error",
+      );
+    }
+  }
+
+  return conversation;
 }
