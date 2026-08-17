@@ -1,4 +1,3 @@
-import { attachZohoConversationId } from "@/lib/messaging/repository";
 import {
   insertIncomingMessage,
   resolveInboundConversation,
@@ -6,6 +5,7 @@ import {
   updateIncomingSummary,
   type InboundMedia,
 } from "@/lib/messaging/inbound-repository";
+import { projectConversationToZoho } from "@/lib/messaging/crm-reconciliation";
 import { requiredEnv } from "@/lib/env";
 import { normalizePhone } from "@/lib/phone/normalize";
 import {
@@ -17,10 +17,6 @@ import {
   getZohoContactById,
   type ZohoContact,
 } from "@/lib/zoho/contacts";
-import {
-  createZohoMessagingConversation,
-  updateZohoMessagingConversation,
-} from "@/lib/zoho/conversations";
 import { sendIncomingSmsCliqNotification } from "@/lib/zoho-cliq/messages";
 
 export const runtime = "nodejs";
@@ -163,68 +159,26 @@ export async function POST(request: Request) {
     });
 
     const normalizedBody = body.trim().toUpperCase();
-    let optOutChanged = false;
     if (STOP_WORDS.has(normalizedBody)) {
       conversation = await setConversationOptOut({
         conversationId: conversation.id,
         optedOut: true,
         occurredAt,
       });
-      optOutChanged = true;
     } else if (START_WORDS.has(normalizedBody)) {
       conversation = await setConversationOptOut({
         conversationId: conversation.id,
         optedOut: false,
         occurredAt,
       });
-      optOutChanged = true;
     }
 
-    if (zohoContactId) {
+    if (conversation.zoho_contact_id) {
       try {
-        const crmSummary = {
-          lastMessage: summaryBody,
-          lastMessageAt: occurredAt,
-          lastMessageDirection: "Incoming" as const,
-          lastMessageStatus: "Received" as const,
-          unreadCount: conversation.unread_count,
-          lastIncomingAt: occurredAt,
-          ...(optOutChanged
-            ? {
-                optOutStatus: conversation.opt_out_status as
-                  | "Active"
-                  | "Opted Out"
-                  | "Do Not Message",
-                optOutDate:
-                  conversation.opt_out_status === "Active"
-                    ? null
-                    : occurredAt.slice(0, 10),
-              }
-            : {}),
-        };
-
-        if (!conversation.zoho_conversation_id) {
-          const zohoConversationId = await createZohoMessagingConversation({
-            contactId: zohoContactId,
-            customerPhone,
-            twilioPhone,
-            externalConversationId: conversation.id,
-            createdFrom: "Incoming SMS",
-            summary: crmSummary,
-          });
-          conversation = await attachZohoConversationId(
-            conversation.id,
-            zohoConversationId,
-          );
-        } else {
-          await updateZohoMessagingConversation(
-            conversation.zoho_conversation_id,
-            crmSummary,
-          );
-        }
+        conversation = await projectConversationToZoho(conversation.id);
       } catch (error) {
         console.warn(
-          "Inbound CRM conversation sync failed after durable message storage",
+          "Inbound CRM projection deferred for reconciliation",
           error instanceof Error ? error.message.slice(0, 180) : "Unknown CRM sync error",
         );
       }
