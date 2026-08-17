@@ -19,6 +19,12 @@ export type MessagingConversation = {
   opt_out_status: string;
   opt_out_at: string | null;
   created_from: string | null;
+  crm_sync_needed: boolean;
+  crm_projection_version: number;
+  crm_synced_version: number;
+  crm_last_synced_at: string | null;
+  crm_last_sync_attempt_at: string | null;
+  crm_sync_error: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -278,13 +284,6 @@ export async function applyMessageStatus(input: {
 
   throwIfError(updateError, "Update SMS delivery status failed");
 
-  const { data: conversation, error: conversationError } = await getSupabaseAdmin()
-    .from("messaging_conversations")
-    .select("*")
-    .eq("id", existing.conversation_id)
-    .single();
-  throwIfError(conversationError, "Load conversation for status sync failed");
-
   const { data: latest, error: latestError } = await getSupabaseAdmin()
     .from("messaging_messages")
     .select("twilio_message_sid")
@@ -296,19 +295,25 @@ export async function applyMessageStatus(input: {
   throwIfError(latestError, "Find latest outgoing SMS failed");
 
   const isLatestOutgoing = latest?.twilio_message_sid === input.twilioMessageSid;
+  let conversation: MessagingConversation | null = null;
 
   if (isLatestOutgoing) {
-    const { error: summaryError } = await getSupabaseAdmin()
+    const { data: updatedConversation, error: summaryError } = await getSupabaseAdmin()
       .from("messaging_conversations")
       .update({ last_message_status: input.nextStatus })
-      .eq("id", existing.conversation_id);
+      .eq("id", existing.conversation_id)
+      .select("*")
+      .single();
     throwIfError(summaryError, "Update conversation delivery status failed");
+    conversation = updatedConversation as MessagingConversation;
+  } else {
+    conversation = await getConversationById(existing.conversation_id);
   }
 
   return {
     applied: true,
     message: updated as MessagingMessage,
-    conversation: conversation as MessagingConversation,
+    conversation,
     isLatestOutgoing,
   };
 }
