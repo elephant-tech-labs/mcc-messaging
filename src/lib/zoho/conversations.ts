@@ -21,6 +21,16 @@ export type ZohoConversationSummary = {
   optOutDate?: string | null;
 };
 
+export type ZohoConversationProjection = ZohoConversationSummary & {
+  contactId: string;
+  channel: "SMS" | "WhatsApp";
+  customerPhone: string;
+  twilioPhone: string;
+  conversationStatus: "Active" | "Closed" | "Archived";
+  externalConversationId: string;
+  createdFrom: ConversationCreatedFrom;
+};
+
 type ZohoMutationResponse = {
   data?: Array<{
     code?: string;
@@ -28,6 +38,10 @@ type ZohoMutationResponse = {
     message?: string;
     status?: string;
   }>;
+};
+
+type ZohoSearchResponse = {
+  data?: Array<{ id?: string }>;
 };
 
 function cleanObject<T extends Record<string, unknown>>(value: T): T {
@@ -45,7 +59,6 @@ function toZohoDateTime(value?: string | null): string | null | undefined {
     throw new Error(`Invalid Zoho messaging datetime: ${value}`);
   }
 
-  // Zoho CRM datetime fields expect ISO-8601 at second precision with an offset.
   return `${date.toISOString().slice(0, 19)}+00:00`;
 }
 
@@ -61,6 +74,30 @@ function summaryRecord(summary: ZohoConversationSummary) {
     Opt_Out_Status: summary.optOutStatus,
     Opt_Out_Date: summary.optOutDate,
   });
+}
+
+function projectionRecord(projection: ZohoConversationProjection) {
+  return cleanObject({
+    Contact: { id: projection.contactId },
+    Channel: projection.channel,
+    Customer_Phone: projection.customerPhone,
+    Twilio_Phone: projection.twilioPhone,
+    Conversation_Status: projection.conversationStatus,
+    External_Conversation_ID: projection.externalConversationId,
+    Created_From: projection.createdFrom,
+    ...summaryRecord(projection),
+  });
+}
+
+export async function findZohoMessagingConversationByExternalId(
+  externalConversationId: string,
+): Promise<string | null> {
+  const criteria = `(External_Conversation_ID:equals:${externalConversationId})`;
+  const response = await zohoFetch<ZohoSearchResponse>(
+    `/crm/v8/Messaging_Conversations/search?criteria=${encodeURIComponent(criteria)}&fields=id&per_page=2`,
+  );
+  const matches = response.data ?? [];
+  return matches.length === 1 ? matches[0]?.id ?? null : null;
 }
 
 export async function createZohoMessagingConversation(input: {
@@ -115,6 +152,19 @@ export async function updateZohoMessagingConversation(
     {
       method: "PUT",
       body: JSON.stringify({ data: [summaryRecord(summary)] }),
+    },
+  );
+}
+
+export async function updateZohoMessagingConversationProjection(
+  zohoConversationId: string,
+  projection: ZohoConversationProjection,
+): Promise<void> {
+  await zohoFetch<ZohoMutationResponse>(
+    `/crm/v8/Messaging_Conversations/${encodeURIComponent(zohoConversationId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ data: [projectionRecord(projection)] }),
     },
   );
 }
