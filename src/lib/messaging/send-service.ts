@@ -7,6 +7,12 @@ import {
   updateOutgoingSummary,
   type MessagingConversation,
 } from "@/lib/messaging/repository";
+import {
+  completeSmsSend,
+  failSmsSend,
+  recordSmsTransportAccepted,
+  reserveSmsSend,
+} from "@/lib/messaging/send-idempotency";
 import { normalizePhone } from "@/lib/phone/normalize";
 import { getTwilioClient } from "@/lib/twilio/client";
 import { toZohoMessageStatus } from "@/lib/twilio/status";
@@ -35,6 +41,7 @@ export type SendSmsInput = {
   conversationId?: string | null;
   sentByZohoUserId?: string | null;
   sentByName?: string | null;
+  idempotencyKey?: string | null;
 };
 
 export type SendSmsResult = {
@@ -122,56 +129,103 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     conversation = await attachZohoConversationId(conversation.id, zohoConversationId);
   }
 
-  const baseUrl = requiredEnv("APP_BASE_URL").replace(/\/$/, "");
-  const twilioMessage = await getTwilioClient().messages.create({
-    body,
-    to: customerPhone,
-    from: twilioPhone,
-    statusCallback: `${baseUrl}/api/twilio/status`,
-  });
-
-  const occurredAt = (twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : new Date()).toISOString();
-
-  await insertOutgoingMessage({
-    conversationId: conversation.id,
-    twilioMessageSid: twilioMessage.sid,
-    body,
-    status: twilioMessage.status,
-    fromPhone: twilioPhone,
-    toPhone: customerPhone,
-    sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
-    sentByName: input.sentByName?.trim() || null,
-    source: input.source as "CRM Widget" | "Cliq" | "Automation",
-    twilioDateCreated: twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
-    twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
-  });
-
-  conversation = await updateOutgoingSummary({ conversationId: conversation.id, body, status: twilioMessage.status, occurredAt });
-
-  let crmSynced = true;
-  let crmSyncError: string | undefined;
-  if (conversation.zoho_conversation_id) {
-    try {
-      await updateZohoMessagingConversation(conversation.zoho_conversation_id, {
-        lastMessage: body,
-        lastMessageAt: occurredAt,
-        lastMessageDirection: "Outgoing",
-        lastMessageStatus: toZohoMessageStatus(twilioMessage.status),
-        unreadCount: 0,
-        lastOutgoingAt: occurredAt,
-      });
-    } catch (error) {
-      crmSynced = false;
-      crmSyncError = message(error);
-    }
+  let reservation;
+  try {
+    reservation = await reserveSmsSend({
+      explicitKey: input.idempotencyKey,
+      source: input.source,
+      zohoContactId,
+      conversationId: conversation.id,
+      customerPhone,
+      twilioPhone,
+      body,
+      sentByZohoUserId: input.sentByZohoUserId,
+    });
+  } catch (error) {
+    throw new SmsSendError(message(error), 409);
   }
 
-  return {
-    messageSid: twilioMessage.sid,
-    status: twilioMessage.status,
-    conversationId: conversation.id,
-    zohoConversationId: conversation.zoho_conversation_id,
-    crmSynced,
-    ...(crmSyncError ? { crmSyncError } : {}),
-  };
+  if (reservation.cachedResult) return reservation.cachedResult;
+
+  try {
+    const baseUrl = requiredEnv("APP_BASE_URL").replace(/\/$/, "");
+    const twilioMessage = await getTwilioClient().messages.create({
+      body,
+      to: customerPhone,
+      from: twilioPhone,
+      statusCallback: `${baseUrl}/api/twilio/status`,
+    });
+
+    try {
+      await recordSmsTransportAccepted(reservation.key, {
+        twilioMessageSid: twilioMessage.sid,
+        status: twilioMessage.status,
+        conversationId: conversation.id,
+        zohoConversationId: conversation.zoho_conversation_id,
+      });
+    } catch (error) {
+      // Twilio has already accepted the SMS. Continue canonical persistence while
+      // leaving the reserved request in a non-repeatable state for safety.
+      console.error("Unable to record Twilio acceptance in idempotency ledger", message(error));
+    }
+
+    const occurredAt = (twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : new Date()).toISOString();
+
+    await insertOutgoingMessage({
+      conversationId: conversation.id,
+      twilioMessageSid: twilioMessage.sid,
+      body,
+      status: twilioMessage.status,
+      fromPhone: twilioPhone,
+      toPhone: customerPhone,
+      sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
+      sentByName: input.sentByName?.trim() || null,
+      source: input.source as "CRM Widget" | "Cliq" | "Automation",
+      twilioDateCreated: twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
+      twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
+    });
+
+    conversation = await updateOutgoingSummary({ conversationId: conversation.id, body, status: twilioMessage.status, occurredAt });
+
+    let crmSynced = true;
+    let crmSyncError: string | undefined;
+    if (conversation.zoho_conversation_id) {
+      try {
+        await updateZohoMessagingConversation(conversation.zoho_conversation_id, {
+          lastMessage: body,
+          lastMessageAt: occurredAt,
+          lastMessageDirection: "Outgoing",
+          lastMessageStatus: toZohoMessageStatus(twilioMessage.status),
+          unreadCount: 0,
+          lastOutgoingAt: occurredAt,
+        });
+      } catch (error) {
+        crmSynced = false;
+        crmSyncError = message(error);
+      }
+    }
+
+    const result: SendSmsResult = {
+      messageSid: twilioMessage.sid,
+      status: twilioMessage.status,
+      conversationId: conversation.id,
+      zohoConversationId: conversation.zoho_conversation_id,
+      crmSynced,
+      ...(crmSyncError ? { crmSyncError } : {}),
+    };
+
+    try {
+      await completeSmsSend(reservation.key, result);
+    } catch (error) {
+      // The actual SMS and canonical message are already persisted. Do not turn a
+      // successful send into a user-visible failure; the reservation still blocks
+      // duplicate delivery and can be reconciled later.
+      console.error("Unable to complete SMS idempotency ledger", message(error));
+    }
+
+    return result;
+  } catch (error) {
+    await failSmsSend(reservation.key, error);
+    throw error;
+  }
 }
