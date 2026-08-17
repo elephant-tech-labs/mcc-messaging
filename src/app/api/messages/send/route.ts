@@ -34,6 +34,7 @@ export async function POST(request: Request) {
       body: input.body ?? "",
       sentByZohoUserId: input.sentByZohoUserId,
       sentByName: input.sentByName,
+      idempotencyKey: request.headers.get("idempotency-key"),
       source: "CRM Widget",
     });
 
