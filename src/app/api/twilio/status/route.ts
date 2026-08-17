@@ -1,9 +1,9 @@
 import { NextResponse } from "next/server";
 import { syncBulkSmsRecipientStatus } from "@/lib/messaging/bulk-sms";
+import { projectConversationToZoho } from "@/lib/messaging/crm-reconciliation";
 import { applyMessageStatus } from "@/lib/messaging/repository";
 import { formDataToRecord, validateTwilioWebhook } from "@/lib/twilio/validate";
-import { normalizeTwilioStatus, toZohoMessageStatus } from "@/lib/twilio/status";
-import { updateZohoMessagingConversation } from "@/lib/zoho/conversations";
+import { normalizeTwilioStatus } from "@/lib/twilio/status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -34,26 +34,26 @@ export async function POST(request: Request) {
 
     if (!result.message) return new Response(null, { status: 204 });
 
-    // Bulk reporting is a projection of the canonical messaging message status.
-    // Do not make Twilio retry a callback if the optional bulk projection is unavailable.
-    try {
-      await syncBulkSmsRecipientStatus({
-        twilioMessageSid: messageSid,
-        status,
-        errorCode: params.ErrorCode || null,
-        errorMessage: params.ErrorMessage || null,
-      });
-    } catch {
-      // A later widget refresh/reconciliation can repair bulk reporting.
-    }
-
-    if (result.applied && result.isLatestOutgoing && result.conversation?.zoho_conversation_id) {
+    // Only project bulk status after the canonical message accepted this callback.
+    // This prevents a stale/out-of-order Twilio callback from downgrading bulk reporting.
+    if (result.applied) {
       try {
-        await updateZohoMessagingConversation(result.conversation.zoho_conversation_id, {
-          lastMessageStatus: toZohoMessageStatus(status),
+        await syncBulkSmsRecipientStatus({
+          twilioMessageSid: messageSid,
+          status,
+          errorCode: params.ErrorCode || null,
+          errorMessage: params.ErrorMessage || null,
         });
       } catch {
-        // Supabase is canonical; CRM summary sync is recoverable.
+        // Canonical messaging remains authoritative; bulk reporting is repairable.
+      }
+    }
+
+    if (result.applied && result.isLatestOutgoing && result.conversation?.zoho_contact_id) {
+      try {
+        await projectConversationToZoho(result.conversation.id);
+      } catch {
+        // The database trigger leaves this conversation dirty for later repair.
       }
     }
 
