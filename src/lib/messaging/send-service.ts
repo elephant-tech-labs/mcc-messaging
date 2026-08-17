@@ -7,6 +7,7 @@ import {
   updateOutgoingSummary,
   type MessagingConversation,
 } from "@/lib/messaging/repository";
+import { projectConversationToZoho } from "@/lib/messaging/crm-reconciliation";
 import {
   completeSmsSend,
   failSmsSend,
@@ -15,12 +16,8 @@ import {
 } from "@/lib/messaging/send-idempotency";
 import { normalizePhone } from "@/lib/phone/normalize";
 import { getTwilioClient } from "@/lib/twilio/client";
-import { toZohoMessageStatus } from "@/lib/twilio/status";
 import { getZohoContactById } from "@/lib/zoho/contacts";
-import {
-  createZohoMessagingConversation,
-  updateZohoMessagingConversation,
-} from "@/lib/zoho/conversations";
+import { createZohoMessagingConversation } from "@/lib/zoho/conversations";
 
 export type SmsSendSource = "CRM Widget" | "Cliq" | "Bulk SMS" | "Automation";
 
@@ -164,8 +161,6 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
         zohoConversationId: conversation.zoho_conversation_id,
       });
     } catch (error) {
-      // Twilio has already accepted the SMS. Continue canonical persistence while
-      // leaving the reserved request in a non-repeatable state for safety.
       console.error("Unable to record Twilio acceptance in idempotency ledger", message(error));
     }
 
@@ -180,7 +175,7 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
       toPhone: customerPhone,
       sentByZohoUserId: input.sentByZohoUserId?.trim() || null,
       sentByName: input.sentByName?.trim() || null,
-      source: input.source as "CRM Widget" | "Cliq" | "Automation",
+      source: input.source,
       twilioDateCreated: twilioMessage.dateCreated instanceof Date ? twilioMessage.dateCreated : null,
       twilioDateSent: twilioMessage.dateSent instanceof Date ? twilioMessage.dateSent : null,
     });
@@ -189,20 +184,12 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
 
     let crmSynced = true;
     let crmSyncError: string | undefined;
-    if (conversation.zoho_conversation_id) {
-      try {
-        await updateZohoMessagingConversation(conversation.zoho_conversation_id, {
-          lastMessage: body,
-          lastMessageAt: occurredAt,
-          lastMessageDirection: "Outgoing",
-          lastMessageStatus: toZohoMessageStatus(twilioMessage.status),
-          unreadCount: 0,
-          lastOutgoingAt: occurredAt,
-        });
-      } catch (error) {
-        crmSynced = false;
-        crmSyncError = message(error);
-      }
+    try {
+      conversation = await projectConversationToZoho(conversation.id);
+      crmSynced = !conversation.crm_sync_needed;
+    } catch (error) {
+      crmSynced = false;
+      crmSyncError = message(error);
     }
 
     const result: SendSmsResult = {
@@ -217,9 +204,6 @@ export async function sendSms(input: SendSmsInput): Promise<SendSmsResult> {
     try {
       await completeSmsSend(reservation.key, result);
     } catch (error) {
-      // The actual SMS and canonical message are already persisted. Do not turn a
-      // successful send into a user-visible failure; the reservation still blocks
-      // duplicate delivery and can be reconciled later.
       console.error("Unable to complete SMS idempotency ledger", message(error));
     }
 
