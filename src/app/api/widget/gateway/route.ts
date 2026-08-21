@@ -18,7 +18,20 @@ import {
   getConversationById,
   getConversationMessagesPage,
 } from "@/lib/messaging/repository";
+import {
+  cancelScheduledSms,
+  createScheduledSms,
+  listScheduledSms,
+  updateScheduledSms,
+} from "@/lib/messaging/scheduled-sms";
 import { sendSms, SmsSendError } from "@/lib/messaging/send-service";
+import {
+  createMessagingTemplate,
+  duplicateMessagingTemplate,
+  listMessagingTemplates,
+  setMessagingTemplateStatus,
+  updateMessagingTemplate,
+} from "@/lib/messaging/templates";
 import {
   getZohoContactById,
   getZohoContactsByIds,
@@ -45,7 +58,17 @@ type WidgetAction =
   | "bulkCreate"
   | "bulkProcess"
   | "bulkStatus"
-  | "bulkList";
+  | "bulkList"
+  | "templateList"
+  | "templateCreate"
+  | "templateUpdate"
+  | "templateArchive"
+  | "templateRestore"
+  | "templateDuplicate"
+  | "scheduledList"
+  | "scheduledCreate"
+  | "scheduledUpdate"
+  | "scheduledCancel";
 
 type WidgetRequest = {
   action?: WidgetAction;
@@ -62,6 +85,15 @@ type WidgetRequest = {
   jobId?: string;
   before?: string;
   includeContacts?: boolean;
+  includeArchived?: boolean;
+  templateId?: string;
+  templateName?: string;
+  templateBody?: string;
+  templateCategory?: string;
+  scheduledId?: string;
+  scheduledFor?: string;
+  timezone?: string;
+  scheduledMode?: "upcoming" | "history" | "all";
 };
 
 function cleanText(value: unknown): string | undefined {
@@ -75,8 +107,12 @@ function cleanContactIds(value: unknown): string[] {
   return [...new Set(value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter((item) => /^\d{10,25}$/.test(item)))].slice(0, 2000);
 }
 
-function validJobId(value: string | undefined): value is string {
+function validUuid(value: string | undefined): value is string {
   return Boolean(value && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value));
+}
+
+function validJobId(value: string | undefined): value is string {
+  return validUuid(value);
 }
 
 function validBefore(value: string | undefined): value is string {
@@ -143,12 +179,140 @@ export async function POST(request: Request) {
     "history", "historyPoll", "historyOlder", "send", "inbox",
     "conversation", "conversationPoll", "conversationOlder", "searchContacts",
     "bulkPreview", "bulkCreate", "bulkProcess", "bulkStatus", "bulkList",
+    "templateList", "templateCreate", "templateUpdate", "templateArchive",
+    "templateRestore", "templateDuplicate", "scheduledList", "scheduledCreate",
+    "scheduledUpdate", "scheduledCancel",
   ];
   if (!action || !supported.includes(action)) {
     return NextResponse.json({ error: "Unsupported widget action" }, { status: 400 });
   }
 
   try {
+    if (action === "templateList") {
+      const templates = await listMessagingTemplates({
+        includeArchived: input.includeArchived === true,
+        limit: 200,
+      });
+      return NextResponse.json({ ok: true, templates });
+    }
+
+    if (action === "templateCreate") {
+      const templateName = cleanText(input.templateName);
+      const templateBody = cleanText(input.templateBody);
+      if (!templateName) return NextResponse.json({ error: "Template name is required" }, { status: 400 });
+      if (!templateBody) return NextResponse.json({ error: "Template message is required" }, { status: 400 });
+      const template = await createMessagingTemplate({
+        name: templateName,
+        body: templateBody,
+        category: cleanText(input.templateCategory),
+        zohoUserId: cleanText(input.sentByZohoUserId),
+        userName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, template }, { status: 201 });
+    }
+
+    if (action === "templateUpdate") {
+      const templateId = cleanText(input.templateId);
+      const templateName = cleanText(input.templateName);
+      const templateBody = cleanText(input.templateBody);
+      if (!validUuid(templateId)) return NextResponse.json({ error: "Valid templateId is required" }, { status: 400 });
+      if (!templateName) return NextResponse.json({ error: "Template name is required" }, { status: 400 });
+      if (!templateBody) return NextResponse.json({ error: "Template message is required" }, { status: 400 });
+      const template = await updateMessagingTemplate({
+        id: templateId,
+        name: templateName,
+        body: templateBody,
+        category: cleanText(input.templateCategory),
+        zohoUserId: cleanText(input.sentByZohoUserId),
+        userName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, template });
+    }
+
+    if (action === "templateArchive" || action === "templateRestore") {
+      const templateId = cleanText(input.templateId);
+      if (!validUuid(templateId)) return NextResponse.json({ error: "Valid templateId is required" }, { status: 400 });
+      const template = await setMessagingTemplateStatus({
+        id: templateId,
+        status: action === "templateArchive" ? "Archived" : "Active",
+        zohoUserId: cleanText(input.sentByZohoUserId),
+        userName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, template });
+    }
+
+    if (action === "templateDuplicate") {
+      const templateId = cleanText(input.templateId);
+      if (!validUuid(templateId)) return NextResponse.json({ error: "Valid templateId is required" }, { status: 400 });
+      const template = await duplicateMessagingTemplate({
+        id: templateId,
+        zohoUserId: cleanText(input.sentByZohoUserId),
+        userName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, template }, { status: 201 });
+    }
+
+    if (action === "scheduledList") {
+      const scheduled = await listScheduledSms({
+        mode: input.scheduledMode ?? "upcoming",
+        limit: 150,
+      });
+      return NextResponse.json({ ok: true, scheduled });
+    }
+
+    if (action === "scheduledCreate") {
+      const zohoContactId = cleanText(input.zohoContactId);
+      const body = cleanText(input.body);
+      const scheduledFor = cleanText(input.scheduledFor);
+      if (!validContactId(zohoContactId)) return NextResponse.json({ error: "Valid zohoContactId is required" }, { status: 400 });
+      if (!body) return NextResponse.json({ error: "Message is required" }, { status: 400 });
+      if (!scheduledFor || Number.isNaN(new Date(scheduledFor).getTime())) {
+        return NextResponse.json({ error: "Valid scheduledFor is required" }, { status: 400 });
+      }
+      const scheduled = await createScheduledSms({
+        zohoContactId,
+        messageBody: body,
+        scheduledFor,
+        timezone: cleanText(input.timezone),
+        templateId: cleanText(input.templateId),
+        createdByZohoUserId: cleanText(input.sentByZohoUserId),
+        createdByName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, scheduled }, { status: 201 });
+    }
+
+    if (action === "scheduledUpdate") {
+      const scheduledId = cleanText(input.scheduledId);
+      const body = cleanText(input.body);
+      const scheduledFor = cleanText(input.scheduledFor);
+      if (!validUuid(scheduledId)) return NextResponse.json({ error: "Valid scheduledId is required" }, { status: 400 });
+      if (!body) return NextResponse.json({ error: "Message is required" }, { status: 400 });
+      if (!scheduledFor || Number.isNaN(new Date(scheduledFor).getTime())) {
+        return NextResponse.json({ error: "Valid scheduledFor is required" }, { status: 400 });
+      }
+      const scheduled = await updateScheduledSms({
+        id: scheduledId,
+        messageBody: body,
+        scheduledFor,
+        timezone: cleanText(input.timezone),
+        templateId: cleanText(input.templateId),
+        updatedByZohoUserId: cleanText(input.sentByZohoUserId),
+        updatedByName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, scheduled });
+    }
+
+    if (action === "scheduledCancel") {
+      const scheduledId = cleanText(input.scheduledId);
+      if (!validUuid(scheduledId)) return NextResponse.json({ error: "Valid scheduledId is required" }, { status: 400 });
+      const scheduled = await cancelScheduledSms({
+        id: scheduledId,
+        updatedByZohoUserId: cleanText(input.sentByZohoUserId),
+        updatedByName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, scheduled });
+    }
+
     if (action === "bulkList") {
       const jobs = await listBulkSmsJobs(30);
       return NextResponse.json({ ok: true, jobs });
