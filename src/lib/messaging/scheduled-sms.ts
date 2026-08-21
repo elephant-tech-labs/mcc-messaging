@@ -72,6 +72,16 @@ function cleanBody(value: string): string {
   return body;
 }
 
+function scheduledFailureCode(errorMessage: string): string {
+  const value = errorMessage.toLowerCase();
+  if (value.includes("opt-out") || value.includes("opted out")) return "CONTACT_OPTED_OUT";
+  if (value.includes("contact not found")) return "CONTACT_NOT_FOUND";
+  if (value.includes("no phone") || value.includes("phone is invalid")) return "PHONE_UNAVAILABLE";
+  if (value.includes("twilio accepted") || value.includes("reconcil")) return "RECONCILIATION_REQUIRED";
+  if (value.includes("twilio")) return "TWILIO_SEND_FAILED";
+  return "SCHEDULED_SEND_FAILED";
+}
+
 function scheduledContactView(contact: ZohoContact | undefined) {
   if (!contact) return null;
   return {
@@ -242,6 +252,7 @@ export async function cancelScheduledSms(input: {
 export async function listScheduledSms(input: {
   mode?: "upcoming" | "history" | "all";
   limit?: number;
+  zohoContactId?: string | null;
 } = {}): Promise<ScheduledSmsView[]> {
   const mode = input.mode ?? "upcoming";
   const limit = Math.max(1, Math.min(200, input.limit ?? 100));
@@ -253,6 +264,7 @@ export async function listScheduledSms(input: {
 
   if (mode === "upcoming") query = query.in("status", ["Scheduled", "Processing"]);
   if (mode === "history") query = query.in("status", ["Sent", "Failed", "Canceled"]);
+  if (input.zohoContactId?.trim()) query = query.eq("zoho_contact_id", input.zohoContactId.trim());
 
   const { data, error } = await query;
   if (error) throw new Error(`Load scheduled SMS failed: ${error.message}`);
@@ -344,6 +356,7 @@ export async function processDueScheduledSms(limit = 10): Promise<{
             .update({
               status: "Failed",
               processing_started_at: null,
+              error_code: scheduledFailureCode(errorMessage),
               error_message: errorMessage,
               updated_at: now,
             })

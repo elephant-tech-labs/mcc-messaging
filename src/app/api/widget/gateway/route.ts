@@ -25,6 +25,7 @@ import {
   updateScheduledSms,
 } from "@/lib/messaging/scheduled-sms";
 import { sendSms, SmsSendError } from "@/lib/messaging/send-service";
+import { renderSmsTemplate } from "@/lib/messaging/template-render";
 import {
   createMessagingTemplate,
   duplicateMessagingTemplate,
@@ -146,6 +147,28 @@ function validContactId(value: string | undefined): value is string {
   return Boolean(value && /^\d{10,25}$/.test(value));
 }
 
+async function renderWidgetMessage(
+  body: string,
+  zohoContactId?: string,
+  conversationId?: string,
+): Promise<string> {
+  if (!/\{\{\s*(First_Name|Last_Name|Full_Name)\s*\}\}/.test(body)) return body;
+
+  let contactId = validContactId(zohoContactId) ? zohoContactId : undefined;
+  if (!contactId && conversationId) {
+    const conversation = await getConversationById(conversationId);
+    contactId = conversation?.zoho_contact_id ?? undefined;
+  }
+  if (!contactId) throw new Error("A Zoho Contact is required to render SMS merge fields");
+
+  const contact = await getZohoContactById(contactId);
+  if (!contact) throw new Error("Zoho Contact not found while rendering SMS merge fields");
+  const rendered = renderSmsTemplate(body, contact).trim();
+  if (!rendered) throw new Error("The rendered SMS message is empty");
+  if (rendered.length > 1600) throw new Error("The rendered SMS message exceeds 1600 characters");
+  return rendered;
+}
+
 async function loadConversationForOpen(conversationId: string) {
   let conversation = await getConversationById(conversationId);
   if (!conversation) return null;
@@ -253,9 +276,14 @@ export async function POST(request: Request) {
     }
 
     if (action === "scheduledList") {
+      const scheduledContactId = cleanText(input.zohoContactId);
+      if (scheduledContactId && !validContactId(scheduledContactId)) {
+        return NextResponse.json({ error: "Valid zohoContactId is required" }, { status: 400 });
+      }
       const scheduled = await listScheduledSms({
         mode: input.scheduledMode ?? "upcoming",
         limit: 150,
+        zohoContactId: scheduledContactId,
       });
       return NextResponse.json({ ok: true, scheduled });
     }
@@ -489,10 +517,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Valid zohoContactId or conversationId is required" }, { status: 400 });
     }
 
+    const renderedBody = await renderWidgetMessage(body, zohoContactId, conversationId);
     const result = await sendSms({
       zohoContactId,
       conversationId,
-      body,
+      body: renderedBody,
       sentByZohoUserId: cleanText(input.sentByZohoUserId),
       sentByName: cleanText(input.sentByName),
       source: "CRM Widget",

@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { hasValidSupabaseCronKey } from "@/lib/auth/cron-key";
 import { processDueScheduledSms } from "@/lib/messaging/scheduled-sms";
 
 export const runtime = "nodejs";
@@ -7,8 +8,8 @@ export const maxDuration = 60;
 
 function authorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET?.trim();
-  if (!secret) return false;
-  return request.headers.get("authorization") === `Bearer ${secret}`;
+  if (secret && request.headers.get("authorization") === `Bearer ${secret}`) return true;
+  return hasValidSupabaseCronKey(request);
 }
 
 export async function GET(request: Request) {
