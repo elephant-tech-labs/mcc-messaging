@@ -30,6 +30,7 @@ create table if not exists public.scheduled_sms (
   template_name_snapshot text,
   message_body text not null check (char_length(trim(message_body)) between 1 and 1600),
   phone_at_scheduling text,
+  phone_sent_to text,
   scheduled_for timestamptz not null,
   timezone text not null default 'UTC',
   status text not null default 'Scheduled'
