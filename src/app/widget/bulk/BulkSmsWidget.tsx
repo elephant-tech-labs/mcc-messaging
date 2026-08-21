@@ -38,6 +38,14 @@ type PreviewRecipient = {
   skipReason: string | null;
 };
 
+type MessagingTemplate = {
+  id: string;
+  name: string;
+  body: string;
+  category: string | null;
+  status: "Active" | "Archived";
+};
+
 type PreviewPayload = {
   ok?: boolean;
   error?: string;
@@ -46,6 +54,13 @@ type PreviewPayload = {
   eligibleCount?: number;
   skippedCount?: number;
   recipients?: PreviewRecipient[];
+};
+
+type TemplatePayload = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  templates?: MessagingTemplate[];
 };
 
 type JobStatus = {
@@ -189,6 +204,8 @@ export default function BulkSmsWidget() {
   const [recordIds, setRecordIds] = useState<string[]>([]);
   const [currentUser, setCurrentUser] = useState<ZohoUser | null>(null);
   const [preview, setPreview] = useState<PreviewPayload | null>(null);
+  const [templates, setTemplates] = useState<MessagingTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [message, setMessage] = useState("");
   const [step, setStep] = useState<"compose" | "review" | "sending" | "done">("compose");
   const [loading, setLoading] = useState(true);
@@ -264,9 +281,34 @@ export default function BulkSmsWidget() {
     };
   }, [recordIds]);
 
+  useEffect(() => {
+    if (recordIds.length === 0) return;
+    let cancelled = false;
+    async function loadTemplates() {
+      try {
+        const result = await executeProxy<TemplatePayload>({ action: "templateList", includeArchived: false });
+        if (result.ok && !cancelled) setTemplates(result.templates ?? []);
+      } catch {
+        // Template tables may not be migrated yet. Existing bulk SMS must remain usable.
+        if (!cancelled) setTemplates([]);
+      }
+    }
+    void loadTemplates();
+    return () => {
+      cancelled = true;
+    };
+  }, [recordIds]);
+
   const appendMerge = useCallback((token: string) => {
     setMessage((current) => `${current}${current && !current.endsWith(" ") ? " " : ""}${token}`);
   }, []);
+
+  function chooseTemplate(templateId: string) {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+    const template = templates.find((item) => item.id === templateId);
+    if (template) setMessage(template.body);
+  }
 
   const processJob = useCallback(async (id: string) => {
     if (processingRef.current) return;
@@ -283,8 +325,6 @@ export default function BulkSmsWidget() {
         if (!done) await sleep(250);
       }
       setStep("done");
-      // Delivery callbacks continue after Twilio accepts the messages. Refresh a few
-      // times so the first delivered/failed results appear without holding the send job open.
       for (let index = 0; index < 3; index += 1) {
         await sleep(1500);
         const refreshed = await executeProxy<{ ok?: boolean; status?: JobStatus }>({ action: "bulkStatus", jobId: id });
@@ -357,6 +397,19 @@ export default function BulkSmsWidget() {
           {step === "compose" && (
             <section className={styles.card}>
               <div className={styles.cardTitle}>Compose message</div>
+
+              <label className={styles.templatePicker}>
+                <span>Saved template <em>optional</em></span>
+                <select onChange={(event) => chooseTemplate(event.target.value)} value={selectedTemplateId}>
+                  <option value="">{templates.length > 0 ? "Choose a saved template…" : "No saved templates"}</option>
+                  {templates.map((template) => (
+                    <option key={template.id} value={template.id}>
+                      {template.category ? `${template.name} · ${template.category}` : template.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
               <div className={styles.mergeRow}>
                 <span>Personalize:</span>
                 {MERGE_FIELDS.map((field) => <button key={field} type="button" onClick={() => appendMerge(field)}>{field}</button>)}
