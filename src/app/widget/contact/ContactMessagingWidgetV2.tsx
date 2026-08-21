@@ -70,6 +70,14 @@ type Message = {
   created_at: string;
 };
 
+type MessagingTemplate = {
+  id: string;
+  name: string;
+  body: string;
+  category: string | null;
+  status: "Active" | "Archived";
+};
+
 type HistoryPayload = {
   ok?: boolean;
   error?: string;
@@ -82,6 +90,19 @@ type HistoryPayload = {
 };
 
 type SendPayload = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+};
+
+type TemplatePayload = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  templates?: MessagingTemplate[];
+};
+
+type ScheduledPayload = {
   ok?: boolean;
   error?: string;
   detail?: string;
@@ -184,6 +205,13 @@ function formatMessageTime(value: string): string {
   }).format(date);
 }
 
+function localInputValue(value?: string | null): string {
+  const date = value ? new Date(value) : new Date(Date.now() + 15 * 60 * 1000);
+  const safe = Number.isNaN(date.getTime()) ? new Date(Date.now() + 15 * 60 * 1000) : date;
+  const local = new Date(safe.getTime() - safe.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 function messageState(status: string): { label: string; failed: boolean } {
   const normalized = status.toLowerCase();
   if (["failed", "undelivered", "canceled"].includes(normalized)) {
@@ -276,11 +304,18 @@ export default function ContactMessagingWidgetV2() {
   const [contact, setContact] = useState<Contact | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [templates, setTemplates] = useState<MessagingTemplate[]>([]);
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [sending, setSending] = useState(false);
+  const [scheduling, setScheduling] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleLocal, setScheduleLocal] = useState(localInputValue());
+  const [scheduleTimezone, setScheduleTimezone] = useState("UTC");
+  const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const loadingRef = useRef(false);
@@ -402,6 +437,18 @@ export default function ContactMessagingWidgetV2() {
     }
   }, [contactId, hasMore, loadingOlder]);
 
+  const loadTemplates = useCallback(async () => {
+    if (!ready) return;
+    try {
+      const payload = await executeProxy<TemplatePayload>({ action: "templateList", includeArchived: false });
+      if (!payload.ok) throw new Error(payload.detail || payload.error || "Unable to load templates");
+      setTemplates(payload.templates ?? []);
+    } catch {
+      // Templates are a productivity enhancement; do not block normal messaging if unavailable.
+      setTemplates([]);
+    }
+  }, [ready]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -443,7 +490,10 @@ export default function ContactMessagingWidgetV2() {
           // Staff identity is optional; never block the conversation if this lookup fails.
         }
 
-        void sdk.CRM.UI?.Resize?.({ height: "600", width: "1000" });
+        if (!cancelled) {
+          setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+        }
+        void sdk.CRM.UI?.Resize?.({ height: "680", width: "1000" });
       } catch (bootstrapError) {
         if (!cancelled) {
           setError(
@@ -471,6 +521,7 @@ export default function ContactMessagingWidgetV2() {
     setMessages([]);
     setHasMore(false);
     void fetchHistory(true, false, "initial");
+    void loadTemplates();
 
     const poll = () => {
       if (document.visibilityState === "visible") {
@@ -491,7 +542,7 @@ export default function ContactMessagingWidgetV2() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [contactId, fetchHistory, ready]);
+  }, [contactId, fetchHistory, loadTemplates, ready]);
 
   const sendMessage = useCallback(async () => {
     if (!contactId || sending || messagingBlocked) return;
@@ -500,6 +551,7 @@ export default function ContactMessagingWidgetV2() {
 
     setSending(true);
     setError(null);
+    setNotice(null);
     try {
       const payload = await executeProxy<SendPayload>({
         action: "send",
@@ -512,6 +564,7 @@ export default function ContactMessagingWidgetV2() {
         throw new Error(payload.detail || payload.error || "Message could not be sent");
       }
       setDraft("");
+      setSelectedTemplateId("");
       await fetchHistory(false, true, "poll");
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Message could not be sent");
@@ -519,6 +572,57 @@ export default function ContactMessagingWidgetV2() {
       setSending(false);
     }
   }, [contactId, currentUser, draft, fetchHistory, messagingBlocked, sending]);
+
+  function chooseTemplate(templateId: string) {
+    setSelectedTemplateId(templateId);
+    if (!templateId) return;
+    const template = templates.find((item) => item.id === templateId);
+    if (template) setDraft(template.body);
+  }
+
+  function openSchedule() {
+    if (!draft.trim() || !contact?.phone || messagingBlocked) return;
+    setError(null);
+    setNotice(null);
+    setScheduleLocal(localInputValue());
+    setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    setScheduleOpen(true);
+  }
+
+  async function scheduleMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!contactId || !draft.trim() || !scheduleLocal || scheduling) return;
+    const scheduledDate = new Date(scheduleLocal);
+    if (Number.isNaN(scheduledDate.getTime())) {
+      setError("Choose a valid date and time.");
+      return;
+    }
+
+    setScheduling(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const payload = await executeProxy<ScheduledPayload>({
+        action: "scheduledCreate",
+        zohoContactId: contactId,
+        body: draft.trim(),
+        templateId: selectedTemplateId || undefined,
+        scheduledFor: scheduledDate.toISOString(),
+        timezone: scheduleTimezone,
+        sentByZohoUserId: currentUser?.id,
+        sentByName: userDisplayName(currentUser),
+      });
+      if (!payload.ok) throw new Error(payload.detail || payload.error || "Message could not be scheduled");
+      setScheduleOpen(false);
+      setDraft("");
+      setSelectedTemplateId("");
+      setNotice(`SMS scheduled for ${formatMessageTime(scheduledDate.toISOString())}.`);
+    } catch (scheduleError) {
+      setError(scheduleError instanceof Error ? scheduleError.message : "Message could not be scheduled");
+    } finally {
+      setScheduling(false);
+    }
+  }
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault();
@@ -556,6 +660,8 @@ export default function ContactMessagingWidgetV2() {
             Messaging is blocked: {activeConversation?.opt_out_status}.
           </div>
         ) : null}
+
+        {notice ? <div className={styles.noticeBanner} role="status">{notice}</div> : null}
 
         {error ? (
           <div className={styles.errorBanner} role="alert">
@@ -608,6 +714,28 @@ export default function ContactMessagingWidgetV2() {
           }) : null}
         </div>
 
+        <div className={styles.composerTools}>
+          <select
+            aria-label="SMS template"
+            disabled={!contact?.phone || messagingBlocked || sending || !ready}
+            onChange={(event) => chooseTemplate(event.target.value)}
+            value={selectedTemplateId}
+          >
+            <option value="">{templates.length > 0 ? "Insert template…" : "No saved templates"}</option>
+            {templates.map((template) => (
+              <option key={template.id} value={template.id}>{template.name}</option>
+            ))}
+          </select>
+          <button
+            className={styles.scheduleButton}
+            disabled={!draft.trim() || !contact?.phone || messagingBlocked || sending || scheduling || !ready}
+            onClick={openSchedule}
+            type="button"
+          >
+            Schedule
+          </button>
+        </div>
+
         <form className={styles.composer} onSubmit={handleSubmit}>
           <textarea
             aria-label="Message"
@@ -626,7 +754,7 @@ export default function ContactMessagingWidgetV2() {
             value={draft}
           />
           <button
-            aria-label="Send SMS"
+            aria-label="Send SMS now"
             className={styles.sendButton}
             disabled={!draft.trim() || !contact?.phone || messagingBlocked || sending || !ready}
             type="submit"
@@ -638,8 +766,38 @@ export default function ContactMessagingWidgetV2() {
             )}
           </button>
         </form>
-        <div className={styles.footerHint}>Enter to send · Shift + Enter for a new line</div>
+        <div className={styles.footerHint}>Enter to send now · Shift + Enter for a new line</div>
       </section>
+
+      {scheduleOpen ? (
+        <div className={styles.scheduleBackdrop} role="presentation">
+          <section className={styles.scheduleDialog} role="dialog" aria-modal="true" aria-label="Schedule SMS">
+            <div className={styles.scheduleHeader}>
+              <div>
+                <strong>Schedule SMS</strong>
+                <span>{contact?.name || "Contact"}</span>
+              </div>
+              <button onClick={() => setScheduleOpen(false)} type="button">×</button>
+            </div>
+            <form onSubmit={scheduleMessage}>
+              <label>
+                <span>Date & time</span>
+                <input min={localInputValue()} onChange={(event) => setScheduleLocal(event.target.value)} type="datetime-local" value={scheduleLocal} />
+              </label>
+              <label>
+                <span>Timezone</span>
+                <input onChange={(event) => setScheduleTimezone(event.target.value)} value={scheduleTimezone} />
+              </label>
+              <div className={styles.schedulePreview}>{draft}</div>
+              <p>The message is frozen when scheduled. The Contact&apos;s current Phone and opt-out status are checked again at send time.</p>
+              <div className={styles.scheduleActions}>
+                <button className={styles.cancelScheduleButton} onClick={() => setScheduleOpen(false)} type="button">Cancel</button>
+                <button className={styles.confirmScheduleButton} disabled={scheduling || !scheduleLocal} type="submit">{scheduling ? "Scheduling…" : "Schedule SMS"}</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      ) : null}
     </main>
   );
 }
