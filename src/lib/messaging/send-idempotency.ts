@@ -25,6 +25,7 @@ type SendRequestRow = {
   crm_sync_error: string | null;
   error_message: string | null;
   created_at: string;
+  updated_at: string;
 };
 
 export type SendReservationInput = {
@@ -45,6 +46,7 @@ export type SendReservation = {
 };
 
 const AUTO_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
+const EXPLICIT_PROCESSING_LEASE_MS = 10 * 60 * 1000;
 
 function hashRequest(input: SendReservationInput): string {
   return createHash("sha256")
@@ -115,13 +117,40 @@ async function existingRecentHash(requestHash: string): Promise<SendRequestRow |
   return (data as SendRequestRow | null) ?? null;
 }
 
-function interpretExisting(row: SendRequestRow, requestHash: string): SendReservation {
+async function interpretExisting(
+  row: SendRequestRow,
+  requestHash: string,
+  allowStaleRecovery: boolean,
+): Promise<SendReservation> {
   if (row.request_hash !== requestHash) {
     throw new Error("Idempotency key was already used for a different SMS request");
   }
   const cached = cachedResult(row);
   if (cached) return { key: row.idempotency_key, requestHash, cachedResult: cached };
   if (row.status === "processing") {
+    const staleBefore = new Date(Date.now() - EXPLICIT_PROCESSING_LEASE_MS).toISOString();
+    if (
+      allowStaleRecovery &&
+      !row.twilio_message_sid &&
+      !Number.isNaN(new Date(row.updated_at).getTime()) &&
+      row.updated_at < staleBefore
+    ) {
+      const { data, error } = await getSupabaseAdmin()
+        .from("messaging_send_requests")
+        .update({ updated_at: new Date().toISOString(), error_message: null })
+        .eq("idempotency_key", row.idempotency_key)
+        .eq("request_hash", requestHash)
+        .eq("status", "processing")
+        .is("twilio_message_sid", null)
+        .lt("updated_at", staleBefore)
+        .select("idempotency_key")
+        .maybeSingle();
+      if (error) throw new Error(`Recover stale SMS send failed: ${error.message}`);
+      if (data) return { key: row.idempotency_key, requestHash };
+    }
+    if (row.twilio_message_sid) {
+      throw new Error("Twilio accepted this SMS, but final persistence is still being reconciled. It was not sent again.");
+    }
     throw new Error("This SMS send is already processing. Refresh the conversation before retrying.");
   }
   throw new Error(
@@ -137,10 +166,10 @@ export async function reserveSmsSend(input: SendReservationInput): Promise<SendR
 
   if (explicitKey) {
     const existing = await loadByKey(explicitKey);
-    if (existing) return interpretExisting(existing, requestHash);
+    if (existing) return interpretExisting(existing, requestHash, true);
   } else {
     const recent = await existingRecentHash(requestHash);
-    if (recent) return interpretExisting(recent, requestHash);
+    if (recent) return interpretExisting(recent, requestHash, false);
   }
 
   const bucket = Math.floor(Date.now() / AUTO_DEDUPE_WINDOW_MS);
@@ -157,7 +186,7 @@ export async function reserveSmsSend(input: SendReservationInput): Promise<SendR
   if (!error) return { key, requestHash };
   if (error.code === "23505") {
     const existing = await loadByKey(key);
-    if (existing) return interpretExisting(existing, requestHash);
+    if (existing) return interpretExisting(existing, requestHash, Boolean(explicitKey));
   }
   throw new Error(`Reserve SMS send failed: ${error.message}`);
 }

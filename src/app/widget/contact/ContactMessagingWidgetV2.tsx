@@ -9,6 +9,11 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  browserTimeZone,
+  instantToZonedInput,
+  zonedInputToUtcIso,
+} from "@/lib/messaging/timezone";
 import styles from "./contact-widget.module.css";
 
 type ZohoPageLoad = {
@@ -106,6 +111,16 @@ type ScheduledPayload = {
   ok?: boolean;
   error?: string;
   detail?: string;
+  scheduled?: ScheduledSms | ScheduledSms[];
+};
+
+type ScheduledSms = {
+  id: string;
+  template_id: string | null;
+  message_body: string;
+  scheduled_for: string;
+  timezone: string;
+  status: "Scheduled" | "Processing";
 };
 
 const SDK_URL = "https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js";
@@ -203,13 +218,6 @@ function formatMessageTime(value: string): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(date);
-}
-
-function localInputValue(value?: string | null): string {
-  const date = value ? new Date(value) : new Date(Date.now() + 15 * 60 * 1000);
-  const safe = Number.isNaN(date.getTime()) ? new Date(Date.now() + 15 * 60 * 1000) : date;
-  const local = new Date(safe.getTime() - safe.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
 }
 
 function messageState(status: string): { label: string; failed: boolean } {
@@ -313,7 +321,9 @@ export default function ContactMessagingWidgetV2() {
   const [sending, setSending] = useState(false);
   const [scheduling, setScheduling] = useState(false);
   const [scheduleOpen, setScheduleOpen] = useState(false);
-  const [scheduleLocal, setScheduleLocal] = useState(localInputValue());
+  const [editingScheduledId, setEditingScheduledId] = useState<string | null>(null);
+  const [upcomingScheduled, setUpcomingScheduled] = useState<ScheduledSms[]>([]);
+  const [scheduleLocal, setScheduleLocal] = useState(() => instantToZonedInput());
   const [scheduleTimezone, setScheduleTimezone] = useState("UTC");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -449,6 +459,24 @@ export default function ContactMessagingWidgetV2() {
     }
   }, [ready]);
 
+  const loadUpcomingScheduled = useCallback(async () => {
+    if (!ready || !contactId) return;
+    try {
+      const payload = await executeProxy<ScheduledPayload>({
+        action: "scheduledList",
+        scheduledMode: "upcoming",
+        zohoContactId: contactId,
+      });
+      if (!payload.ok || !Array.isArray(payload.scheduled)) {
+        throw new Error(payload.detail || payload.error || "Unable to load scheduled messages");
+      }
+      setUpcomingScheduled(payload.scheduled);
+    } catch {
+      // Scheduling visibility should never block the live conversation.
+      setUpcomingScheduled([]);
+    }
+  }, [contactId, ready]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -491,7 +519,7 @@ export default function ContactMessagingWidgetV2() {
         }
 
         if (!cancelled) {
-          setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+          setScheduleTimezone(browserTimeZone());
         }
         void sdk.CRM.UI?.Resize?.({ height: "680", width: "1000" });
       } catch (bootstrapError) {
@@ -522,6 +550,7 @@ export default function ContactMessagingWidgetV2() {
     setHasMore(false);
     void fetchHistory(true, false, "initial");
     void loadTemplates();
+    void loadUpcomingScheduled();
 
     const poll = () => {
       if (document.visibilityState === "visible") {
@@ -536,13 +565,15 @@ export default function ContactMessagingWidgetV2() {
     };
 
     const timer = window.setInterval(poll, POLL_INTERVAL_MS);
+    const scheduledTimer = window.setInterval(() => void loadUpcomingScheduled(), 30_000);
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       window.clearInterval(timer);
+      window.clearInterval(scheduledTimer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [contactId, fetchHistory, loadTemplates, ready]);
+  }, [contactId, fetchHistory, loadTemplates, loadUpcomingScheduled, ready]);
 
   const sendMessage = useCallback(async () => {
     if (!contactId || sending || messagingBlocked) return;
@@ -584,39 +615,77 @@ export default function ContactMessagingWidgetV2() {
     if (!draft.trim() || !contact?.phone || messagingBlocked) return;
     setError(null);
     setNotice(null);
-    setScheduleLocal(localInputValue());
-    setScheduleTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    setEditingScheduledId(null);
+    const currentTimezone = browserTimeZone();
+    setScheduleLocal(instantToZonedInput(Date.now() + 15 * 60 * 1000, currentTimezone));
+    setScheduleTimezone(currentTimezone);
     setScheduleOpen(true);
   }
 
-  async function scheduleMessage(event: FormEvent) {
-    event.preventDefault();
-    if (!contactId || !draft.trim() || !scheduleLocal || scheduling) return;
-    const scheduledDate = new Date(scheduleLocal);
-    if (Number.isNaN(scheduledDate.getTime())) {
-      setError("Choose a valid date and time.");
-      return;
-    }
+  function openScheduledEdit(item: ScheduledSms) {
+    if (item.status !== "Scheduled") return;
+    setError(null);
+    setNotice(null);
+    setEditingScheduledId(item.id);
+    setSelectedTemplateId(item.template_id ?? "");
+    setDraft(item.message_body);
+    setScheduleTimezone(item.timezone || "UTC");
+    setScheduleLocal(instantToZonedInput(item.scheduled_for, item.timezone || "UTC"));
+    setScheduleOpen(true);
+  }
 
+  function closeSchedule() {
+    setScheduleOpen(false);
+    setEditingScheduledId(null);
+  }
+
+  async function cancelScheduled(item: ScheduledSms) {
+    if (item.status !== "Scheduled" || scheduling) return;
     setScheduling(true);
     setError(null);
     setNotice(null);
     try {
       const payload = await executeProxy<ScheduledPayload>({
-        action: "scheduledCreate",
+        action: "scheduledCancel",
+        scheduledId: item.id,
+        sentByZohoUserId: currentUser?.id,
+        sentByName: userDisplayName(currentUser),
+      });
+      if (!payload.ok) throw new Error(payload.detail || payload.error || "Scheduled SMS could not be canceled");
+      await loadUpcomingScheduled();
+      setNotice("Scheduled SMS canceled.");
+    } catch (cancelError) {
+      setError(cancelError instanceof Error ? cancelError.message : "Scheduled SMS could not be canceled");
+    } finally {
+      setScheduling(false);
+    }
+  }
+
+  async function scheduleMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!contactId || !draft.trim() || !scheduleLocal || scheduling) return;
+    setScheduling(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const scheduledFor = zonedInputToUtcIso(scheduleLocal, scheduleTimezone);
+      const payload = await executeProxy<ScheduledPayload>({
+        action: editingScheduledId ? "scheduledUpdate" : "scheduledCreate",
+        scheduledId: editingScheduledId || undefined,
         zohoContactId: contactId,
         body: draft.trim(),
         templateId: selectedTemplateId || undefined,
-        scheduledFor: scheduledDate.toISOString(),
+        scheduledFor,
         timezone: scheduleTimezone,
         sentByZohoUserId: currentUser?.id,
         sentByName: userDisplayName(currentUser),
       });
       if (!payload.ok) throw new Error(payload.detail || payload.error || "Message could not be scheduled");
-      setScheduleOpen(false);
+      closeSchedule();
       setDraft("");
       setSelectedTemplateId("");
-      setNotice(`SMS scheduled for ${formatMessageTime(scheduledDate.toISOString())}.`);
+      await loadUpcomingScheduled();
+      setNotice(`SMS ${editingScheduledId ? "updated" : "scheduled"} for ${formatMessageTime(scheduledFor)} (${scheduleTimezone}).`);
     } catch (scheduleError) {
       setError(scheduleError instanceof Error ? scheduleError.message : "Message could not be scheduled");
     } finally {
@@ -714,6 +783,28 @@ export default function ContactMessagingWidgetV2() {
           }) : null}
         </div>
 
+        {upcomingScheduled.length > 0 ? (
+          <section className={styles.upcoming} aria-label="Upcoming scheduled SMS">
+            <div className={styles.upcomingTitle}>Upcoming</div>
+            {upcomingScheduled.slice(0, 3).map((item) => (
+              <div className={styles.upcomingItem} key={item.id}>
+                <div>
+                  <strong>{formatMessageTime(item.scheduled_for)}</strong>
+                  <span>{item.message_body}</span>
+                </div>
+                <div className={styles.upcomingActions}>
+                  {item.status === "Scheduled" ? (
+                    <>
+                      <button onClick={() => openScheduledEdit(item)} type="button">Edit</button>
+                      <button disabled={scheduling} onClick={() => void cancelScheduled(item)} type="button">Cancel</button>
+                    </>
+                  ) : <span>Processing…</span>}
+                </div>
+              </div>
+            ))}
+          </section>
+        ) : null}
+
         <div className={styles.composerTools}>
           <select
             aria-label="SMS template"
@@ -774,15 +865,15 @@ export default function ContactMessagingWidgetV2() {
           <section className={styles.scheduleDialog} role="dialog" aria-modal="true" aria-label="Schedule SMS">
             <div className={styles.scheduleHeader}>
               <div>
-                <strong>Schedule SMS</strong>
+                <strong>{editingScheduledId ? "Edit scheduled SMS" : "Schedule SMS"}</strong>
                 <span>{contact?.name || "Contact"}</span>
               </div>
-              <button onClick={() => setScheduleOpen(false)} type="button">×</button>
+              <button onClick={closeSchedule} type="button">×</button>
             </div>
             <form onSubmit={scheduleMessage}>
               <label>
                 <span>Date & time</span>
-                <input min={localInputValue()} onChange={(event) => setScheduleLocal(event.target.value)} type="datetime-local" value={scheduleLocal} />
+                <input onChange={(event) => setScheduleLocal(event.target.value)} type="datetime-local" value={scheduleLocal} />
               </label>
               <label>
                 <span>Timezone</span>
@@ -791,8 +882,8 @@ export default function ContactMessagingWidgetV2() {
               <div className={styles.schedulePreview}>{draft}</div>
               <p>The message is frozen when scheduled. The Contact&apos;s current Phone and opt-out status are checked again at send time.</p>
               <div className={styles.scheduleActions}>
-                <button className={styles.cancelScheduleButton} onClick={() => setScheduleOpen(false)} type="button">Cancel</button>
-                <button className={styles.confirmScheduleButton} disabled={scheduling || !scheduleLocal} type="submit">{scheduling ? "Scheduling…" : "Schedule SMS"}</button>
+                <button className={styles.cancelScheduleButton} onClick={closeSchedule} type="button">Cancel</button>
+                <button className={styles.confirmScheduleButton} disabled={scheduling || !scheduleLocal} type="submit">{scheduling ? "Saving…" : editingScheduledId ? "Update SMS" : "Schedule SMS"}</button>
               </div>
             </form>
           </section>

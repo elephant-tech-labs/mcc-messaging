@@ -22,6 +22,9 @@ create index if not exists messaging_templates_status_updated_idx
 
 alter table public.messaging_templates enable row level security;
 
+revoke all on table public.messaging_templates from anon, authenticated;
+grant select, insert, update, delete on table public.messaging_templates to service_role;
+
 create table if not exists public.scheduled_sms (
   id uuid primary key default gen_random_uuid(),
   zoho_contact_id text not null,
@@ -63,15 +66,30 @@ create index if not exists scheduled_sms_status_idx
 
 alter table public.scheduled_sms enable row level security;
 
+revoke all on table public.scheduled_sms from anon, authenticated;
+grant select, insert, update, delete on table public.scheduled_sms to service_role;
+
 create or replace function public.claim_due_scheduled_sms(
   p_limit integer default 10
 )
 returns setof public.scheduled_sms
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 begin
+  -- A timed-out invocation can leave a row in Processing. Returning it to the
+  -- queue is safe because the send service uses scheduled:<uuid> as its
+  -- idempotency key.
+  update public.scheduled_sms
+  set status = 'Scheduled',
+      processing_started_at = null,
+      error_code = 'STALE_PROCESSING_RECOVERED',
+      error_message = 'Recovered automatically after the scheduler stopped before completion.',
+      updated_at = now()
+  where status = 'Processing'
+    and processing_started_at < now() - interval '10 minutes';
+
   return query
   with due as (
     select id
@@ -96,3 +114,4 @@ $$;
 revoke all on function public.claim_due_scheduled_sms(integer) from public;
 revoke all on function public.claim_due_scheduled_sms(integer) from anon;
 revoke all on function public.claim_due_scheduled_sms(integer) from authenticated;
+grant execute on function public.claim_due_scheduled_sms(integer) to service_role;

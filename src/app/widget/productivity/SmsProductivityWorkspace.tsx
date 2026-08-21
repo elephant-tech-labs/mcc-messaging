@@ -1,6 +1,11 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  browserTimeZone,
+  instantToZonedInput,
+  zonedInputToUtcIso,
+} from "@/lib/messaging/timezone";
 import styles from "./sms-productivity.module.css";
 
 type ZohoUser = {
@@ -165,13 +170,6 @@ function formatDateTime(value: string | null): string {
   }).format(date);
 }
 
-function localInputValue(value?: string | null): string {
-  const date = value ? new Date(value) : new Date(Date.now() + 15 * 60 * 1000);
-  const safe = Number.isNaN(date.getTime()) ? new Date(Date.now() + 15 * 60 * 1000) : date;
-  const local = new Date(safe.getTime() - safe.getTimezoneOffset() * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
 function deliveryLabel(value: string | null): string {
   if (!value) return "";
   const normalized = value.toLowerCase();
@@ -202,7 +200,7 @@ export default function SmsProductivityWorkspace() {
   const [contactResults, setContactResults] = useState<Contact[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [scheduleBody, setScheduleBody] = useState("");
-  const [scheduleLocal, setScheduleLocal] = useState(localInputValue());
+  const [scheduleLocal, setScheduleLocal] = useState(() => instantToZonedInput());
   const [timezone, setTimezone] = useState("UTC");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -259,7 +257,7 @@ export default function SmsProductivityWorkspace() {
           // User audit metadata is optional.
         }
         if (!cancelled) {
-          setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+          setTimezone(browserTimeZone());
           setReady(true);
         }
       } catch (bootstrapError) {
@@ -396,8 +394,9 @@ export default function SmsProductivityWorkspace() {
     setContactResults([]);
     setSelectedTemplateId("");
     setScheduleBody("");
-    setScheduleLocal(localInputValue());
-    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+    const currentTimezone = browserTimeZone();
+    setScheduleLocal(instantToZonedInput(Date.now() + 15 * 60 * 1000, currentTimezone));
+    setTimezone(currentTimezone);
     setScheduleEditorOpen(true);
   }
 
@@ -409,7 +408,7 @@ export default function SmsProductivityWorkspace() {
     setContactResults([]);
     setSelectedTemplateId(item.template_id ?? "");
     setScheduleBody(item.message_body);
-    setScheduleLocal(localInputValue(item.scheduled_for));
+    setScheduleLocal(instantToZonedInput(item.scheduled_for, item.timezone || "UTC"));
     setTimezone(item.timezone || "UTC");
     setScheduleEditorOpen(true);
   }
@@ -432,15 +431,14 @@ export default function SmsProductivityWorkspace() {
     setSaving(true);
     resetMessages();
     try {
-      const date = new Date(scheduleLocal);
-      if (Number.isNaN(date.getTime())) throw new Error("Choose a valid date and time");
+      const scheduledFor = zonedInputToUtcIso(scheduleLocal, timezone);
       const payload = await executeProxy<{ scheduled?: ScheduledSms }>({
         action: editingScheduled ? "scheduledUpdate" : "scheduledCreate",
         scheduledId: editingScheduled?.id,
         zohoContactId: scheduleContact.id,
         body: scheduleBody,
         templateId: selectedTemplateId || undefined,
-        scheduledFor: date.toISOString(),
+        scheduledFor,
         timezone,
         sentByZohoUserId: currentUser?.id,
         sentByName: userName,
@@ -709,7 +707,7 @@ export default function SmsProductivityWorkspace() {
               <div className={styles.twoColumn}>
                 <label className={styles.field}>
                   <span>Date & time</span>
-                  <input min={localInputValue()} onChange={(event) => setScheduleLocal(event.target.value)} type="datetime-local" value={scheduleLocal} />
+                  <input onChange={(event) => setScheduleLocal(event.target.value)} type="datetime-local" value={scheduleLocal} />
                 </label>
                 <label className={styles.field}>
                   <span>Timezone</span>
