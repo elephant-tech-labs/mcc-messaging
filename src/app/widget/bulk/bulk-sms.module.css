@@ -114,6 +114,47 @@
   font-weight: 750;
 }
 
+.templatePicker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: #4a5566;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.templatePicker span {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.templatePicker em {
+  color: #8b94a1;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 500;
+}
+
+.templatePicker select {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cfd5dd;
+  border-radius: 9px;
+  outline: none;
+  padding: 9px 10px;
+  background: #fff;
+  color: #354052;
+  font: inherit;
+  font-size: 12px;
+}
+
+.templatePicker select:focus {
+  border-color: #8c9bad;
+  box-shadow: 0 0 0 3px rgba(91, 115, 143, .10);
+}
+
 .mergeRow {
   display: flex;
   align-items: center;
