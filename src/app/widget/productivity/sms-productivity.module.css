@@ -1,0 +1,686 @@
+.page {
+  min-height: 100vh;
+  background: #f6f8fb;
+  color: #172033;
+  padding: 24px;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+  margin: 0 auto 18px;
+  max-width: 1180px;
+}
+
+.header h1 {
+  font-size: 28px;
+  line-height: 1.15;
+  margin: 4px 0 6px;
+  letter-spacing: -0.025em;
+}
+
+.header p {
+  margin: 0;
+  color: #647084;
+  font-size: 14px;
+}
+
+.eyebrow {
+  color: #536277;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tabs {
+  max-width: 1180px;
+  margin: 0 auto 14px;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #dce3ec;
+  border-radius: 12px;
+  background: #fff;
+  width: fit-content;
+}
+
+.tabs button {
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  padding: 9px 18px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #657187;
+  cursor: pointer;
+}
+
+.tabs .activeTab {
+  background: #16233a;
+  color: #fff;
+  box-shadow: 0 2px 7px rgba(19, 35, 61, 0.15);
+}
+
+.panel {
+  max-width: 1180px;
+  min-height: 480px;
+  margin: 0 auto;
+  background: #fff;
+  border: 1px solid #dfe5ed;
+  border-radius: 16px;
+  box-shadow: 0 8px 28px rgba(28, 40, 58, 0.05);
+  overflow: hidden;
+}
+
+.toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #e8edf3;
+  background: #fbfcfe;
+}
+
+.searchInput,
+.field input,
+.field textarea,
+.field select {
+  width: 100%;
+  border: 1px solid #ccd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #172033;
+  font: inherit;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.searchInput {
+  max-width: 360px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.searchInput:focus,
+.field input:focus,
+.field textarea:focus,
+.field select:focus {
+  border-color: #7a8ba4;
+  box-shadow: 0 0 0 3px rgba(81, 105, 139, 0.1);
+}
+
+.checkboxLabel {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  font-size: 13px;
+  color: #5f6b7d;
+}
+
+.primaryButton,
+.secondaryButton,
+.cardActions button,
+.mergeRow button,
+.iconButton,
+.selectedContact button {
+  font: inherit;
+  cursor: pointer;
+}
+
+.primaryButton {
+  border: 1px solid #172640;
+  border-radius: 10px;
+  background: #172640;
+  color: #fff;
+  padding: 10px 15px;
+  font-size: 13px;
+  font-weight: 750;
+  box-shadow: 0 3px 10px rgba(23, 38, 64, 0.15);
+}
+
+.primaryButton:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.secondaryButton {
+  border: 1px solid #ccd5e1;
+  border-radius: 10px;
+  background: #fff;
+  color: #344056;
+  padding: 9px 13px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.templateGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding: 18px;
+}
+
+.templateCard,
+.scheduleCard {
+  border: 1px solid #dfe5ed;
+  border-radius: 13px;
+  background: #fff;
+}
+
+.templateCard {
+  padding: 16px;
+  display: flex;
+  min-height: 190px;
+  flex-direction: column;
+}
+
+.cardTop,
+.scheduleMain {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.templateCard h2,
+.scheduleCard h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+.metaRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  color: #6c7788;
+  font-size: 11px;
+}
+
+.category,
+.activePill,
+.archivedPill,
+.statusPill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 23px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.category {
+  background: #eef2f7;
+  color: #536176;
+}
+
+.activePill {
+  background: #e8f5ec;
+  color: #277044;
+}
+
+.archivedPill {
+  background: #f0f1f4;
+  color: #69717e;
+}
+
+.statusPill {
+  background: #edf2f8;
+  color: #42546d;
+}
+
+.templateBody,
+.scheduleBody {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #3d485b;
+  line-height: 1.55;
+  font-size: 13px;
+}
+
+.templateBody {
+  flex: 1;
+  margin: 14px 0 18px;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.cardFooter,
+.scheduleFooter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid #edf1f5;
+  padding-top: 12px;
+  color: #7a8493;
+  font-size: 11px;
+}
+
+.cardActions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.cardActions button,
+.mergeRow button,
+.selectedContact button {
+  border: 1px solid #d7dee8;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 9px;
+  color: #435066;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.cardActions button:hover,
+.mergeRow button:hover,
+.selectedContact button:hover,
+.secondaryButton:hover {
+  background: #f6f8fb;
+}
+
+.emptyState,
+.loading {
+  min-height: 410px;
+  padding: 40px 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  color: #667287;
+}
+
+.emptyState h2 {
+  margin: 8px 0 6px;
+  color: #263247;
+  font-size: 17px;
+}
+
+.emptyState p {
+  max-width: 440px;
+  margin: 0 0 18px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.emptyIcon {
+  height: 42px;
+  width: 42px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: #eef2f7;
+  color: #526279;
+  font-size: 20px;
+}
+
+.errorBanner,
+.noticeBanner {
+  max-width: 1180px;
+  margin: 0 auto 12px;
+  padding: 10px 13px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+
+.errorBanner {
+  border: 1px solid #efc7c7;
+  background: #fff2f2;
+  color: #9a3535;
+}
+
+.noticeBanner {
+  border: 1px solid #c9dfcf;
+  background: #f1faf4;
+  color: #2d6f44;
+}
+
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid #d8e0e9;
+  background: #fff;
+  border-radius: 9px;
+}
+
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: #687488;
+  border-radius: 6px;
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.segmented .segmentActive {
+  background: #edf2f7;
+  color: #27354c;
+}
+
+.scheduleList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+}
+
+.scheduleCard {
+  padding: 15px 16px;
+}
+
+.scheduleIdentity {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+}
+
+.scheduleIdentity p,
+.scheduleWhen span {
+  margin: 2px 0 0;
+  color: #788396;
+  font-size: 11px;
+}
+
+.avatar {
+  height: 36px;
+  width: 36px;
+  border-radius: 11px;
+  display: grid;
+  place-items: center;
+  background: #e8edf4;
+  color: #42526b;
+  font-weight: 800;
+}
+
+.scheduleWhen {
+  text-align: right;
+  display: flex;
+  flex-direction: column;
+  color: #334056;
+  font-size: 12px;
+}
+
+.scheduleBody {
+  margin: 13px 0;
+  padding: 11px 12px;
+  background: #f7f9fc;
+  border-radius: 9px;
+}
+
+.errorText {
+  color: #a74444;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(17, 27, 43, 0.48);
+}
+
+.modal {
+  width: min(620px, 100%);
+  max-height: calc(100vh - 36px);
+  overflow: auto;
+  border-radius: 16px;
+  border: 1px solid #d9e0e9;
+  background: #fff;
+  box-shadow: 0 24px 60px rgba(12, 24, 43, 0.25);
+  padding: 20px;
+}
+
+.scheduleModal {
+  width: min(720px, 100%);
+}
+
+.modalHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.modalHeader h2 {
+  margin: 4px 0 0;
+  font-size: 20px;
+}
+
+.iconButton {
+  height: 34px;
+  width: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #d7dee8;
+  border-radius: 9px;
+  background: #fff;
+  color: #546175;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  color: #354258;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.field small {
+  color: #8a94a3;
+  font-weight: 500;
+}
+
+.field input,
+.field textarea,
+.field select {
+  box-sizing: border-box;
+  padding: 10px 11px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.field textarea {
+  resize: vertical;
+  min-height: 120px;
+  line-height: 1.5;
+}
+
+.mergeRow {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: -5px;
+  color: #758095;
+  font-size: 11px;
+}
+
+.counter {
+  margin-top: 6px;
+  color: #8a94a3;
+  text-align: right;
+  font-size: 11px;
+}
+
+.modalFooter {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid #e8edf3;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.twoColumn {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.scheduleNote {
+  margin-top: 2px;
+  border: 1px solid #dce6f2;
+  background: #f5f8fc;
+  color: #5c6a7d;
+  border-radius: 10px;
+  padding: 10px 11px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.selectedContact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 11px;
+  border: 1px solid #d5dde7;
+  border-radius: 10px;
+  background: #f9fbfd;
+}
+
+.selectedContact div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.selectedContact span {
+  color: #788396;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.contactSearchWrap {
+  position: relative;
+}
+
+.contactResults {
+  position: absolute;
+  top: calc(100% + 5px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  max-height: 240px;
+  overflow: auto;
+  border: 1px solid #d7dee8;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(25, 36, 55, 0.14);
+}
+
+.contactResults button {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #edf1f5;
+  background: #fff;
+  text-align: left;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.contactResults button:last-child {
+  border-bottom: 0;
+}
+
+.contactResults button:hover {
+  background: #f6f8fb;
+}
+
+.contactResults strong {
+  color: #2d3a50;
+  font-size: 12px;
+}
+
+.contactResults span,
+.searchHint {
+  color: #7b8697;
+  font-size: 11px;
+}
+
+.searchHint {
+  margin-top: 5px;
+  font-weight: 500;
+}
+
+@media (max-width: 760px) {
+  .page {
+    padding: 14px;
+  }
+
+  .header {
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .headerActions,
+  .headerActions .primaryButton {
+    width: 100%;
+  }
+
+  .templateGrid {
+    grid-template-columns: 1fr;
+    padding: 12px;
+  }
+
+  .toolbar,
+  .cardFooter,
+  .scheduleFooter,
+  .scheduleMain {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .searchInput {
+    max-width: none;
+  }
+
+  .scheduleWhen {
+    text-align: left;
+  }
+
+  .twoColumn {
+    grid-template-columns: 1fr;
+  }
+
+  .modalBackdrop {
+    padding: 8px;
+    align-items: flex-end;
+  }
+
+  .modal {
+    max-height: 92vh;
+    border-radius: 16px 16px 0 0;
+  }
+}
