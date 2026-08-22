@@ -221,6 +221,111 @@
   letter-spacing: .04em;
 }
 
+.timingBox {
+  margin-top: 14px;
+  padding: 13px;
+  border: 1px solid #e2e6eb;
+  border-radius: 11px;
+  background: #fafbfc;
+}
+
+.timingLabel {
+  margin-bottom: 9px;
+  color: #4c5665;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.timingChoices {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.timingChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid #e0e5ea;
+  border-radius: 9px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.timingChoice input {
+  margin-top: 3px;
+}
+
+.timingChoice span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.timingChoice strong {
+  color: #354052;
+  font-size: 12px;
+}
+
+.timingChoice em {
+  color: #7b8492;
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.scheduleFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  margin-top: 11px;
+}
+
+.scheduleFields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  color: #596374;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.scheduleFields input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid #cfd5dd;
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: #fff;
+  color: #354052;
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.scheduleFields input:focus {
+  border-color: #8c9bad;
+  box-shadow: 0 0 0 3px rgba(91, 115, 143, .10);
+}
+
+.scheduleReview {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid #dce4df;
+  border-radius: 9px;
+  background: #f5faf7;
+  color: #4c5f53;
+  font-size: 12px;
+}
+
+.scheduleReview span {
+  color: #758078;
+}
+
 .details {
   margin-top: 14px;
   border-top: 1px solid #edf0f3;
@@ -290,7 +395,7 @@
 
 .reviewGrid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 10px;
 }
 
@@ -347,6 +452,15 @@
   margin-bottom: 14px;
 }
 
+.wideStat {
+  grid-column: span 3;
+}
+
+.wideStat strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
 .note {
   color: #667183;
   font-size: 12px;
@@ -357,7 +471,9 @@
 @media (max-width: 720px) {
   .shell { padding: 14px; }
   .header { align-items: stretch; }
-  .stats, .reviewGrid { grid-template-columns: 1fr; }
+  .stats, .reviewGrid, .timingChoices, .scheduleFields { grid-template-columns: 1fr; }
   .statsCompact { grid-template-columns: repeat(2, 1fr); }
   .stats > div, .statsCompact > div { border-right: 0; border-bottom: 1px solid #edf0f3; }
+  .wideStat { grid-column: span 2; }
+  .scheduleReview { flex-direction: column; }
 }
