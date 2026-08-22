@@ -4,6 +4,8 @@ import { getMessagingTemplate } from "@/lib/messaging/templates";
 import { getSupabaseAdmin } from "@/lib/supabase/admin";
 import { getZohoContactsByIds } from "@/lib/zoho/contacts";
 
+// Bulk scheduling intentionally fans out into the existing scheduled_sms queue so
+// Contact and Bulk scheduling share one worker, idempotency path, and send-time safety checks.
 function cleanIds(ids: string[]): string[] {
   return [...new Set(ids.map((id) => id.trim()).filter((id) => /^\d{10,25}$/.test(id)))].slice(0, 2000);
 }
