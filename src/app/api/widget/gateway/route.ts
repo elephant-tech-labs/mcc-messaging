@@ -7,6 +7,7 @@ import {
   previewBulkSmsRecipients,
   processBulkSmsBatch,
 } from "@/lib/messaging/bulk-sms";
+import { scheduleBulkSms } from "@/lib/messaging/bulk-schedule";
 import {
   countUnreadConversations,
   listInboxConversations,
@@ -57,6 +58,7 @@ type WidgetAction =
   | "searchContacts"
   | "bulkPreview"
   | "bulkCreate"
+  | "bulkSchedule"
   | "bulkProcess"
   | "bulkStatus"
   | "bulkList"
@@ -201,7 +203,7 @@ export async function POST(request: Request) {
   const supported: WidgetAction[] = [
     "history", "historyPoll", "historyOlder", "send", "inbox",
     "conversation", "conversationPoll", "conversationOlder", "searchContacts",
-    "bulkPreview", "bulkCreate", "bulkProcess", "bulkStatus", "bulkList",
+    "bulkPreview", "bulkCreate", "bulkSchedule", "bulkProcess", "bulkStatus", "bulkList",
     "templateList", "templateCreate", "templateUpdate", "templateArchive",
     "templateRestore", "templateDuplicate", "scheduledList", "scheduledCreate",
     "scheduledUpdate", "scheduledCancel",
@@ -362,6 +364,31 @@ export async function POST(request: Request) {
         contactIds,
         messageTemplate,
         name: cleanText(input.jobName),
+        createdByZohoUserId: cleanText(input.sentByZohoUserId),
+        createdByName: cleanText(input.sentByName),
+      });
+      return NextResponse.json({ ok: true, ...result }, { status: 201 });
+    }
+
+    if (action === "bulkSchedule") {
+      const contactIds = cleanContactIds(input.contactIds);
+      const messageTemplate = cleanText(input.messageTemplate);
+      const scheduledFor = cleanText(input.scheduledFor);
+      const templateId = cleanText(input.templateId);
+      if (contactIds.length === 0) return NextResponse.json({ error: "Select at least one Contact" }, { status: 400 });
+      if (!messageTemplate) return NextResponse.json({ error: "Message is required" }, { status: 400 });
+      if (!scheduledFor || Number.isNaN(new Date(scheduledFor).getTime())) {
+        return NextResponse.json({ error: "Valid scheduledFor is required" }, { status: 400 });
+      }
+      if (templateId && !validUuid(templateId)) {
+        return NextResponse.json({ error: "Valid templateId is required" }, { status: 400 });
+      }
+      const result = await scheduleBulkSms({
+        contactIds,
+        messageTemplate,
+        scheduledFor,
+        timezone: cleanText(input.timezone),
+        templateId,
         createdByZohoUserId: cleanText(input.sentByZohoUserId),
         createdByName: cleanText(input.sentByName),
       });
