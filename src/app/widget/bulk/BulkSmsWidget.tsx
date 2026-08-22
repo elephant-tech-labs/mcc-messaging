@@ -1,6 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  browserTimeZone,
+  instantToZonedInput,
+  zonedInputToUtcIso,
+} from "@/lib/messaging/timezone";
 import styles from "./bulk-sms.module.css";
 
 type ZohoUser = {
@@ -104,6 +109,18 @@ type ProcessPayload = {
   status?: JobStatus;
 };
 
+type BulkSchedulePayload = {
+  ok?: boolean;
+  error?: string;
+  detail?: string;
+  scheduledCount?: number;
+  skippedCount?: number;
+  scheduledFor?: string;
+  timezone?: string;
+};
+
+type BulkStep = "compose" | "review" | "sending" | "done" | "scheduling" | "scheduled";
+
 const SDK_URL = "https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js";
 const PROXY_FUNCTION = "mcc_messaging_widget_proxy";
 const MERGE_FIELDS = ["{{First_Name}}", "{{Last_Name}}", "{{Full_Name}}"];
@@ -196,6 +213,24 @@ function renderSample(template: string, recipient?: PreviewRecipient): string {
     .replace(/\{\{\s*Full_Name\s*\}\}/g, recipient.name);
 }
 
+function formatScheduledTime(value: string, timeZone: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone,
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(date);
+  } catch {
+    return date.toLocaleString();
+  }
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -207,7 +242,11 @@ export default function BulkSmsWidget() {
   const [templates, setTemplates] = useState<MessagingTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [message, setMessage] = useState("");
-  const [step, setStep] = useState<"compose" | "review" | "sending" | "done">("compose");
+  const [sendMode, setSendMode] = useState<"now" | "later">("now");
+  const [scheduleLocal, setScheduleLocal] = useState("");
+  const [scheduleTimezone, setScheduleTimezone] = useState("UTC");
+  const [scheduledResult, setScheduledResult] = useState<BulkSchedulePayload | null>(null);
+  const [step, setStep] = useState<BulkStep>("compose");
   const [loading, setLoading] = useState(true);
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -218,6 +257,12 @@ export default function BulkSmsWidget() {
   const eligible = useMemo(() => (preview?.recipients ?? []).filter((item) => item.eligible), [preview]);
   const skipped = useMemo(() => (preview?.recipients ?? []).filter((item) => !item.eligible), [preview]);
   const sample = renderSample(message, eligible[0]);
+
+  useEffect(() => {
+    const timeZone = browserTimeZone();
+    setScheduleTimezone(timeZone);
+    setScheduleLocal(instantToZonedInput(Date.now() + 30 * 60 * 1000, timeZone));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -242,7 +287,7 @@ export default function BulkSmsWidget() {
         });
         await Promise.resolve(zoho.embeddedApp.init());
         try {
-          await Promise.resolve(zoho.CRM.UI?.Resize?.({ width: "900", height: "720" }));
+          await Promise.resolve(zoho.CRM.UI?.Resize?.({ width: "900", height: "760" }));
         } catch {}
         try {
           const getter = zoho.CRM.CONFIG?.getCurrentUser;
@@ -365,6 +410,43 @@ export default function BulkSmsWidget() {
     }
   }, [confirmed, currentUser, message, preview, processJob, recordIds]);
 
+  const startSchedule = useCallback(async () => {
+    if (!preview || !preview.eligibleCount || !confirmed) return;
+    const body = message.trim();
+    if (!body) {
+      setError("Enter a message before scheduling.");
+      return;
+    }
+    if (!scheduleLocal) {
+      setError("Choose a date and time before scheduling.");
+      return;
+    }
+
+    setError(null);
+    setStep("scheduling");
+    try {
+      const scheduledFor = zonedInputToUtcIso(scheduleLocal, scheduleTimezone);
+      const result = await executeProxy<BulkSchedulePayload>({
+        action: "bulkSchedule",
+        contactIds: recordIds,
+        messageTemplate: body,
+        scheduledFor,
+        timezone: scheduleTimezone,
+        templateId: selectedTemplateId || undefined,
+        sentByZohoUserId: currentUser?.id,
+        sentByName: userName(currentUser),
+      });
+      if (!result.ok || !result.scheduledCount || !result.scheduledFor || !result.timezone) {
+        throw new Error(result.detail || result.error || "Unable to schedule bulk SMS");
+      }
+      setScheduledResult(result);
+      setStep("scheduled");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to schedule bulk SMS");
+      setStep("review");
+    }
+  }, [confirmed, currentUser, message, preview, recordIds, scheduleLocal, scheduleTimezone, selectedTemplateId]);
+
   const progress = jobStatus?.job.eligible_count
     ? Math.round(((jobStatus.job.eligible_count - jobStatus.pendingCount) / jobStatus.job.eligible_count) * 100)
     : 0;
@@ -379,14 +461,14 @@ export default function BulkSmsWidget() {
         <div>
           <div className={styles.eyebrow}>MCC Messaging</div>
           <h1>Bulk SMS</h1>
-          <p>Send one controlled SMS job to selected CRM Contacts.</p>
+          <p>Send now or schedule one personalized SMS to selected CRM Contacts.</p>
         </div>
         <div className={styles.selectedBadge}>{preview?.totalSelected ?? recordIds.length} selected</div>
       </header>
 
       {error && <div className={styles.error}>{error}</div>}
 
-      {preview && step !== "sending" && step !== "done" && (
+      {preview && (step === "compose" || step === "review") && (
         <>
           <section className={styles.stats}>
             <div><strong>{preview.totalSelected ?? 0}</strong><span>Selected</span></div>
@@ -430,6 +512,52 @@ export default function BulkSmsWidget() {
                 </div>
               )}
 
+              <div className={styles.timingBox}>
+                <div className={styles.timingLabel}>Delivery timing</div>
+                <div className={styles.timingChoices}>
+                  <label className={styles.timingChoice}>
+                    <input
+                      type="radio"
+                      name="bulk-sms-timing"
+                      checked={sendMode === "now"}
+                      onChange={() => setSendMode("now")}
+                    />
+                    <span><strong>Send now</strong><em>Start sending after final review.</em></span>
+                  </label>
+                  <label className={styles.timingChoice}>
+                    <input
+                      type="radio"
+                      name="bulk-sms-timing"
+                      checked={sendMode === "later"}
+                      onChange={() => setSendMode("later")}
+                    />
+                    <span><strong>Schedule for later</strong><em>Queue every eligible Contact for the same date and time.</em></span>
+                  </label>
+                </div>
+
+                {sendMode === "later" && (
+                  <div className={styles.scheduleFields}>
+                    <label>
+                      <span>Date & time</span>
+                      <input
+                        type="datetime-local"
+                        value={scheduleLocal}
+                        onChange={(event) => setScheduleLocal(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>Timezone</span>
+                      <input
+                        type="text"
+                        value={scheduleTimezone}
+                        onChange={(event) => setScheduleTimezone(event.target.value)}
+                        placeholder="America/Chicago"
+                      />
+                    </label>
+                  </div>
+                )}
+              </div>
+
               {skipped.length > 0 && (
                 <details className={styles.details}>
                   <summary>Review {skipped.length} skipped Contact{skipped.length === 1 ? "" : "s"}</summary>
@@ -446,10 +574,13 @@ export default function BulkSmsWidget() {
                 <button
                   className={styles.primary}
                   type="button"
-                  disabled={!message.trim() || (preview.eligibleCount ?? 0) === 0}
-                  onClick={() => setStep("review")}
+                  disabled={!message.trim() || (preview.eligibleCount ?? 0) === 0 || (sendMode === "later" && !scheduleLocal)}
+                  onClick={() => {
+                    setConfirmed(false);
+                    setStep("review");
+                  }}
                 >
-                  Review & Send
+                  {sendMode === "later" ? "Review & Schedule" : "Review & Send"}
                 </button>
               </div>
             </section>
@@ -462,7 +593,17 @@ export default function BulkSmsWidget() {
                 <div><span>SMS recipients</span><strong>{preview.eligibleCount ?? 0}</strong></div>
                 <div><span>Skipped</span><strong>{preview.skippedCount ?? 0}</strong></div>
                 <div><span>Message length</span><strong>{message.trim().length} chars</strong></div>
+                <div>
+                  <span>Delivery</span>
+                  <strong>{sendMode === "later" ? "Scheduled" : "Now"}</strong>
+                </div>
               </div>
+              {sendMode === "later" && (
+                <div className={styles.scheduleReview}>
+                  <strong>{scheduleLocal ? scheduleLocal.replace("T", " ") : "No time selected"}</strong>
+                  <span>{scheduleTimezone}</span>
+                </div>
+              )}
               <div className={styles.finalMessage}>{sample}</div>
               <label className={styles.confirmRow}>
                 <input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} />
@@ -470,13 +611,46 @@ export default function BulkSmsWidget() {
               </label>
               <div className={styles.actionsBetween}>
                 <button className={styles.secondary} type="button" onClick={() => setStep("compose")}>Back</button>
-                <button className={styles.primary} type="button" disabled={!confirmed} onClick={() => void startSend()}>
-                  Send {preview.eligibleCount ?? 0} SMS
+                <button
+                  className={styles.primary}
+                  type="button"
+                  disabled={!confirmed}
+                  onClick={() => sendMode === "later" ? void startSchedule() : void startSend()}
+                >
+                  {sendMode === "later"
+                    ? `Schedule ${preview.eligibleCount ?? 0} SMS`
+                    : `Send ${preview.eligibleCount ?? 0} SMS`}
                 </button>
               </div>
             </section>
           )}
         </>
+      )}
+
+      {step === "scheduling" && (
+        <section className={styles.card}>
+          <div className={styles.cardTitle}>Scheduling bulk SMS…</div>
+          <p className={styles.note}>Preparing personalized scheduled messages for each eligible Contact.</p>
+        </section>
+      )}
+
+      {step === "scheduled" && scheduledResult && (
+        <section className={styles.card}>
+          <div className={styles.cardTitle}>Bulk SMS scheduled</div>
+          <section className={styles.statsCompact}>
+            <div><strong>{scheduledResult.scheduledCount ?? 0}</strong><span>Scheduled</span></div>
+            <div><strong>{scheduledResult.skippedCount ?? 0}</strong><span>Skipped</span></div>
+            <div className={styles.wideStat}>
+              <strong>{scheduledResult.scheduledFor && scheduledResult.timezone
+                ? formatScheduledTime(scheduledResult.scheduledFor, scheduledResult.timezone)
+                : "Scheduled"}</strong>
+              <span>Delivery time</span>
+            </div>
+          </section>
+          <p className={styles.note}>
+            Each Contact has an individualized frozen message. Phone and opt-out status are checked again when the scheduled send runs. Upcoming messages can be managed from MCC SMS Tools.
+          </p>
+        </section>
       )}
 
       {(step === "sending" || step === "done") && (
