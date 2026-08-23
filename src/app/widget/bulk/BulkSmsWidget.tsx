@@ -121,9 +121,22 @@ type BulkSchedulePayload = {
 
 type BulkStep = "compose" | "review" | "sending" | "done" | "scheduling" | "scheduled";
 
+type TimezoneOption = {
+  value: string;
+  label: string;
+};
+
 const SDK_URL = "https://live.zwidgets.com/js-sdk/1.2/ZohoEmbededAppSDK.min.js";
 const PROXY_FUNCTION = "mcc_messaging_widget_proxy";
 const MERGE_FIELDS = ["{{First_Name}}", "{{Last_Name}}", "{{Full_Name}}"];
+const MCC_DEFAULT_TIMEZONE = "America/Chicago";
+const TIMEZONE_OPTIONS: TimezoneOption[] = [
+  { value: "America/New_York", label: "Eastern Time (America/New_York)" },
+  { value: "America/Chicago", label: "Central Time (America/Chicago) · MCC default" },
+  { value: "America/Denver", label: "Mountain Time (America/Denver)" },
+  { value: "America/Los_Angeles", label: "Pacific Time (America/Los_Angeles)" },
+  { value: "Asia/Kolkata", label: "India Time (Asia/Kolkata)" },
+];
 
 function sdk(): ZohoSdk | undefined {
   return (window as unknown as { ZOHO?: ZohoSdk }).ZOHO;
@@ -231,6 +244,13 @@ function formatScheduledTime(value: string, timeZone: string): string {
   }
 }
 
+function timezoneDisplayName(value: string, browserTimezone: string): string {
+  const known = TIMEZONE_OPTIONS.find((option) => option.value === value);
+  if (known) return known.label.replace(" · MCC default", "");
+  if (value === browserTimezone) return `Browser timezone (${value})`;
+  return value;
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -243,8 +263,9 @@ export default function BulkSmsWidget() {
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [message, setMessage] = useState("");
   const [sendMode, setSendMode] = useState<"now" | "later">("now");
+  const [browserTimezone, setBrowserTimezone] = useState("UTC");
   const [scheduleLocal, setScheduleLocal] = useState("");
-  const [scheduleTimezone, setScheduleTimezone] = useState("UTC");
+  const [scheduleTimezone, setScheduleTimezone] = useState(MCC_DEFAULT_TIMEZONE);
   const [scheduledResult, setScheduledResult] = useState<BulkSchedulePayload | null>(null);
   const [step, setStep] = useState<BulkStep>("compose");
   const [loading, setLoading] = useState(true);
@@ -257,11 +278,23 @@ export default function BulkSmsWidget() {
   const eligible = useMemo(() => (preview?.recipients ?? []).filter((item) => item.eligible), [preview]);
   const skipped = useMemo(() => (preview?.recipients ?? []).filter((item) => !item.eligible), [preview]);
   const sample = renderSample(message, eligible[0]);
+  const scheduleDate = scheduleLocal.split("T")[0] ?? "";
+  const scheduleTime = scheduleLocal.split("T")[1] ?? "";
+  const timezoneOptions = useMemo(() => {
+    if (!browserTimezone || TIMEZONE_OPTIONS.some((option) => option.value === browserTimezone)) {
+      return TIMEZONE_OPTIONS;
+    }
+    return [
+      ...TIMEZONE_OPTIONS,
+      { value: browserTimezone, label: `Browser timezone (${browserTimezone})` },
+    ];
+  }, [browserTimezone]);
 
   useEffect(() => {
-    const timeZone = browserTimeZone();
-    setScheduleTimezone(timeZone);
-    setScheduleLocal(instantToZonedInput(Date.now() + 30 * 60 * 1000, timeZone));
+    const detectedTimezone = browserTimeZone();
+    setBrowserTimezone(detectedTimezone);
+    setScheduleTimezone(MCC_DEFAULT_TIMEZONE);
+    setScheduleLocal(instantToZonedInput(Date.now() + 30 * 60 * 1000, MCC_DEFAULT_TIMEZONE));
   }, []);
 
   useEffect(() => {
@@ -287,7 +320,7 @@ export default function BulkSmsWidget() {
         });
         await Promise.resolve(zoho.embeddedApp.init());
         try {
-          await Promise.resolve(zoho.CRM.UI?.Resize?.({ width: "900", height: "760" }));
+          await Promise.resolve(zoho.CRM.UI?.Resize?.({ width: "900", height: "780" }));
         } catch {}
         try {
           const getter = zoho.CRM.CONFIG?.getCurrentUser;
@@ -334,7 +367,6 @@ export default function BulkSmsWidget() {
         const result = await executeProxy<TemplatePayload>({ action: "templateList", includeArchived: false });
         if (result.ok && !cancelled) setTemplates(result.templates ?? []);
       } catch {
-        // Template tables may not be migrated yet. Existing bulk SMS must remain usable.
         if (!cancelled) setTemplates([]);
       }
     }
@@ -353,6 +385,23 @@ export default function BulkSmsWidget() {
     if (!templateId) return;
     const template = templates.find((item) => item.id === templateId);
     if (template) setMessage(template.body);
+  }
+
+  function chooseSendMode(mode: "now" | "later") {
+    setSendMode(mode);
+    if (mode === "later" && !scheduleLocal) {
+      setScheduleLocal(instantToZonedInput(Date.now() + 30 * 60 * 1000, scheduleTimezone));
+    }
+  }
+
+  function updateScheduleDate(value: string) {
+    const time = scheduleTime || "09:00";
+    setScheduleLocal(value ? `${value}T${time}` : "");
+  }
+
+  function updateScheduleTime(value: string) {
+    const date = scheduleDate || instantToZonedInput(Date.now() + 30 * 60 * 1000, scheduleTimezone).split("T")[0];
+    setScheduleLocal(value ? `${date}T${value}` : "");
   }
 
   const processJob = useCallback(async (id: string) => {
@@ -512,51 +561,80 @@ export default function BulkSmsWidget() {
                 </div>
               )}
 
-              <div className={styles.timingBox}>
-                <div className={styles.timingLabel}>Delivery timing</div>
-                <div className={styles.timingChoices}>
-                  <label className={styles.timingChoice}>
+              <section className={styles.timingBox} aria-labelledby="delivery-timing-label">
+                <div className={styles.timingHeader}>
+                  <div>
+                    <div className={styles.timingLabel} id="delivery-timing-label">Delivery timing</div>
+                    <p>Choose when this bulk message should be sent.</p>
+                  </div>
+                </div>
+
+                <div className={styles.timingChoices} role="radiogroup" aria-label="Delivery timing">
+                  <label className={`${styles.timingChoice} ${sendMode === "now" ? styles.timingChoiceSelected : ""}`}>
                     <input
                       type="radio"
                       name="bulk-sms-timing"
                       checked={sendMode === "now"}
-                      onChange={() => setSendMode("now")}
+                      onChange={() => chooseSendMode("now")}
                     />
-                    <span><strong>Send now</strong><em>Start sending after final review.</em></span>
+                    <span className={styles.timingChoiceCopy}>
+                      <strong>Send now</strong>
+                      <em>Send to all eligible Contacts immediately after confirmation.</em>
+                    </span>
                   </label>
-                  <label className={styles.timingChoice}>
+
+                  <label className={`${styles.timingChoice} ${sendMode === "later" ? styles.timingChoiceSelected : ""}`}>
                     <input
                       type="radio"
                       name="bulk-sms-timing"
                       checked={sendMode === "later"}
-                      onChange={() => setSendMode("later")}
+                      onChange={() => chooseSendMode("later")}
                     />
-                    <span><strong>Schedule for later</strong><em>Queue every eligible Contact for the same date and time.</em></span>
+                    <span className={styles.timingChoiceCopy}>
+                      <strong>Schedule for later</strong>
+                      <em>Send to all eligible Contacts at a future date and time.</em>
+                    </span>
                   </label>
                 </div>
 
                 {sendMode === "later" && (
-                  <div className={styles.scheduleFields}>
-                    <label>
-                      <span>Date & time</span>
-                      <input
-                        type="datetime-local"
-                        value={scheduleLocal}
-                        onChange={(event) => setScheduleLocal(event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      <span>Timezone</span>
-                      <input
-                        type="text"
-                        value={scheduleTimezone}
-                        onChange={(event) => setScheduleTimezone(event.target.value)}
-                        placeholder="America/Chicago"
-                      />
-                    </label>
+                  <div className={styles.schedulePanel}>
+                    <div className={styles.schedulePanelTitle}>Schedule details</div>
+                    <div className={styles.scheduleFields}>
+                      <label>
+                        <span>Date</span>
+                        <input
+                          type="date"
+                          value={scheduleDate}
+                          onChange={(event) => updateScheduleDate(event.target.value)}
+                        />
+                      </label>
+                      <label>
+                        <span>Time</span>
+                        <input
+                          type="time"
+                          value={scheduleTime}
+                          onChange={(event) => updateScheduleTime(event.target.value)}
+                        />
+                      </label>
+                      <label className={styles.timezoneField}>
+                        <span>Timezone</span>
+                        <select
+                          value={scheduleTimezone}
+                          onChange={(event) => setScheduleTimezone(event.target.value)}
+                        >
+                          {timezoneOptions.map((option) => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                        <small>
+                          MCC defaults to Central Time. Your browser is {timezoneDisplayName(browserTimezone, browserTimezone)}.
+                        </small>
+                      </label>
+                    </div>
                   </div>
                 )}
-              </div>
+              </section>
 
               {skipped.length > 0 && (
                 <details className={styles.details}>
@@ -600,8 +678,14 @@ export default function BulkSmsWidget() {
               </div>
               {sendMode === "later" && (
                 <div className={styles.scheduleReview}>
-                  <strong>{scheduleLocal ? scheduleLocal.replace("T", " ") : "No time selected"}</strong>
-                  <span>{scheduleTimezone}</span>
+                  <div>
+                    <span>Scheduled for</span>
+                    <strong>{scheduleLocal ? scheduleLocal.replace("T", " · ") : "No time selected"}</strong>
+                  </div>
+                  <div>
+                    <span>Timezone</span>
+                    <strong>{timezoneDisplayName(scheduleTimezone, browserTimezone)}</strong>
+                  </div>
                 </div>
               )}
               <div className={styles.finalMessage}>{sample}</div>
